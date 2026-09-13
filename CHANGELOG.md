@@ -10,6 +10,7 @@
 ### Dashboard
 
 - Every dashboard cost — the Est. Cost stat card and daily cost line, Cost by Model / Project / Project & Branch, Recent Sessions, subagent dispatches, and their CSV exports — now applies the same 1-hour-TTL pricing, so it matches the CLI (#162).
+- Added **cache hit-rate visibility**: an overview stat + daily trend chart showing what share of prompt-processing tokens were served from cache vs. freshly processed, a sortable "Cache Hit %" column on Recent Sessions with a click-to-expand main-agent/subagent split, and hit-rate columns on the Top Subagent Dispatches table and the subagent-by-type chart's tooltip.
 
 ## v1.5.5 — 2026-07-10
 

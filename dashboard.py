@@ -158,6 +158,33 @@ def get_dashboard_data(db_path=DB_PATH):
             "cache_creation_1h": r["cache_creation_1h"] or 0,
         })
 
+    # Per-session, main-agent-vs-subagent token breakdown — lets the client
+    # split a session's cache stats into what the top-level conversation did
+    # versus what its dispatched subagents did, without a per-dispatch join.
+    agent_split_rows = conn.execute("""
+        SELECT
+            session_id,
+            is_subagent,
+            SUM(input_tokens)          as input,
+            SUM(output_tokens)         as output,
+            SUM(cache_read_tokens)     as cache_read,
+            SUM(cache_creation_tokens) as cache_creation,
+            SUM(cache_creation_1h_tokens) as cache_creation_1h
+        FROM turns
+        GROUP BY session_id, is_subagent
+    """).fetchall()
+
+    session_agent_split = {}
+    for r in agent_split_rows:
+        session_agent_split.setdefault(r["session_id"], []).append({
+            "is_subagent":    r["is_subagent"],
+            "input":          r["input"] or 0,
+            "output":         r["output"] or 0,
+            "cache_read":     r["cache_read"] or 0,
+            "cache_creation": r["cache_creation"] or 0,
+            "cache_creation_1h": r["cache_creation_1h"] or 0,
+        })
+
     sessions_all = []
     for r in session_rows:
         try:
@@ -184,6 +211,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "cache_creation": r["total_cache_creation"] or 0,
             "cache_creation_1h": r["total_cache_creation_1h"] or 0,
             "by_model":      session_breakdown.get(r["session_id"], []),
+            "by_agent":      session_agent_split.get(r["session_id"], []),
         })
 
     # ── Subagent breakdown by type, by day & model ────────────────────────────
@@ -268,6 +296,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "duration_ms":    r["duration_ms"],
         "tool_uses":      r["tool_uses"],
         "status":         r["status"],
+        "parent_session": r["parent_session"],
     } for r in top_dispatch_rows]
 
     conn.close()
@@ -414,6 +443,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .muted { color: var(--muted); }
   .topic-cell { box-sizing: border-box; min-width: 160px; max-width: 260px; overflow-wrap: anywhere; font-size: 12px; color: var(--text); }
   .untitled { color: var(--muted); font-style: italic; }
+  #sessions-body tr.clickable-row { cursor: pointer; }
+  #sessions-body tr.clickable-row.expanded td { border-bottom-color: transparent; }
+  .session-detail-row td { background: var(--raised); padding: 10px 16px; }
+  .agent-split-row { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; font-size: 12px; }
+  .agent-split-row .muted { white-space: nowrap; }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
   .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .section-header .section-title { margin-bottom: 0; }
@@ -536,6 +570,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </button>
     <div class="jump-panel">
       <button class="jump-link" data-target="sec-daily">Daily</button>
+      <button class="jump-link" data-target="sec-cache">Cache Hit Rate</button>
       <button class="jump-link" data-target="sec-hourly">Distribution</button>
       <button class="jump-link" data-target="sec-models">By Model</button>
       <button class="jump-link" data-target="sec-projects">Top Projects</button>
@@ -578,6 +613,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
       <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
     </div>
+    <div class="chart-card" id="sec-cache" data-card="cache-chart">
+      <h2><span class="card-caret">&#9656;</span><span id="cache-chart-title">Cache Hit Rate</span></h2>
+      <div class="chart-wrap"><canvas id="chart-cache"></canvas></div>
+    </div>
     <div class="chart-card" id="sec-models" data-card="model-chart">
       <h2><span class="card-caret">&#9656;</span>By Model</h2>
       <div class="chart-wrap"><canvas id="chart-model"></canvas></div>
@@ -612,7 +651,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <table>
       <thead><tr>
         <th>Type</th><th>Started</th><th>Model</th><th>Turns</th><th>Tool Uses</th>
-        <th>Duration</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Tokens</th><th>Est. Cost</th>
+        <th>Duration</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Hit %</th><th>Tokens</th><th>Est. Cost</th>
       </tr></thead>
       <tbody id="dispatches-body"></tbody>
     </table>
@@ -631,6 +670,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
         <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
         <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
+        <th class="sortable" onclick="setSessionSort('hit_rate')">Cache Hit % <span class="sort-icon" id="sort-icon-hit_rate"></span></th>
         <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
@@ -872,6 +912,16 @@ function fmt(n) {
 }
 function fmtCost(c)    { return '$' + c.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 }); }
 function fmtCostBig(c) { return '$' + c.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+// Share of prompt-processing tokens served from cache rather than freshly
+// processed or written to cache this turn. null (not 0) when there's nothing
+// to divide by, so a turn/session that never touched caching reads as "n/a"
+// instead of a misleading 0%.
+function hitRate(inp, cacheRead, cacheCreation) {
+  const total = (inp || 0) + (cacheRead || 0) + (cacheCreation || 0);
+  return total > 0 ? cacheRead / total : null;
+}
+function fmtPct(x) { return (x === null || x === undefined) ? 'n/a' : (x * 100).toFixed(1) + '%'; }
 
 // ── Chart colors ───────────────────────────────────────────────────────────
 // Warm/neutral palette kept in sync with the CSS :root variables so charts match
@@ -1232,6 +1282,9 @@ function sortSessions(sessions) {
     if (sessionSortCol === 'cost') {
       av = sessionCost(a);
       bv = sessionCost(b);
+    } else if (sessionSortCol === 'hit_rate') {
+      av = hitRate(a.input, a.cache_read, a.cache_creation) ?? -1;
+      bv = hitRate(b.input, b.cache_read, b.cache_creation) ?? -1;
     } else if (sessionSortCol === 'duration_min') {
       av = parseFloat(a.duration_min) || 0;
       bv = parseFloat(b.duration_min) || 0;
@@ -1371,11 +1424,13 @@ function applyFilter() {
 
   // Update daily chart title
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('cache-chart-title').textContent = 'Cache Hit Rate \u2014 ' + RANGE_LABELS[selectedRange];
   document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
   document.getElementById('subagent-chart-title').textContent = 'Subagent Tokens by Type \u2014 ' + RANGE_LABELS[selectedRange];
 
   renderStats(totals);
   renderDailyChart(daily);
+  renderCacheChart(daily);
   renderHourlyChart(hourlyAgg);
   renderModelChart(byModel);
   renderProjectChart(byProject);
@@ -1403,6 +1458,7 @@ function renderStats(t) {
     { label: 'Subagent Tokens', value: fmt(t.subagent_tokens || 0), sub: 'included in totals' },
     { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
     { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
+    { label: 'Cache Hit %',    value: fmtPct(hitRate(t.input, t.cache_read, t.cache_creation)), sub: rangeLabel, color: C.blue },
     { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, June 2026', color: C.green },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
@@ -1558,6 +1614,42 @@ function renderDailyChart(daily) {
   });
 }
 
+// Daily cache hit-rate trend. Reuses applyFilter's already-aggregated `daily`
+// rows (input/cache_read/cache_creation per day) — no separate data source.
+function renderCacheChart(daily) {
+  const ctx = document.getElementById('chart-cache').getContext('2d');
+  if (charts.cache) charts.cache.destroy();
+  if (!daily.length) { charts.cache = null; return; }
+  charts.cache = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(d => d.day),
+      datasets: [{
+        label: 'Cache Hit %',
+        data: daily.map(d => {
+          const hr = hitRate(d.input, d.cache_read, d.cache_creation);
+          return hr === null ? null : hr * 100;
+        }),
+        borderColor: C.blue, backgroundColor: 'transparent',
+        pointRadius: 2, tension: 0.3, spanGaps: true,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: {
+          label: item => ` Cache Hit: ${item.raw === null ? 'n/a' : item.raw.toFixed(1) + '%'}`
+        } }
+      },
+      scales: {
+        x: { ticks: { color: C.axis, maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: C.border } },
+        y: { min: 0, max: 100, ticks: { color: C.axis, callback: v => v + '%' }, grid: { color: C.border } },
+      }
+    }
+  });
+}
+
 function renderModelChart(byModel) {
   const ctx = document.getElementById('chart-model').getContext('2d');
   if (charts.model) charts.model.destroy();
@@ -1642,7 +1734,8 @@ function renderSubagentChart(byType) {
           footer: items => {
             const total = items.reduce((s, it) => s + it.raw, 0);
             const row = byType[items[0].dataIndex];
-            return ` Total: ${fmt(total)} · ${row.turns} turns`;
+            const hr = fmtPct(hitRate(row.input, row.cache_read, row.cache_creation));
+            return ` Total: ${fmt(total)} · ${row.turns} turns · Cache hit: ${hr}`;
           }
         } }
       },
@@ -1657,7 +1750,7 @@ function renderSubagentChart(byType) {
 function renderTopDispatches(rows) {
   const body = document.getElementById('dispatches-body');
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">No subagent dispatches in selected range.</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="muted" style="text-align:center;padding:24px">No subagent dispatches in selected range.</td></tr>';
     renderTableToggle('dispatches-foot', 0, dispatchesLimit, 'lessDispatchRows', 'moreDispatchRows', 'exportDispatchesCSV');
     return;
   }
@@ -1680,6 +1773,7 @@ function renderTopDispatches(rows) {
       <td class="num">${fmt(d.input)}</td>
       <td class="num">${fmt(d.output)}</td>
       <td class="num">${fmt(d.cache_read)}</td>
+      <td class="num">${fmtPct(hitRate(d.input, d.cache_read, d.cache_creation))}</td>
       <td class="num"><strong>${fmt(tokensTotal)}</strong></td>
       ${costCell}
     </tr>`;
@@ -1732,6 +1826,10 @@ function lessBranchRows()  { branchLimit   = TABLE_STEPS[0]; renderProjectBranch
 function moreDispatchRows(){ dispatchesLimit = nextTableLimit(dispatchesLimit, lastFilteredDispatches.length); renderTopDispatches(lastFilteredDispatches); }
 function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatches(lastFilteredDispatches);            scrollTableToTop('dispatches-body'); }
 
+// Sessions table columns: Session, Project, Title, Last Active, Duration,
+// Model, Turns, Input, Output, Cache Hit %, Est. Cost.
+const SESSIONS_TABLE_COLS = 11;
+
 function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
   document.getElementById('sessions-body').innerHTML = shown.map(s => {
@@ -1742,7 +1840,8 @@ function renderSessionsTable(sessions) {
     const titleCell = s.topic
       ? `<td class="topic-cell" title="${esc(s.topic)}">${esc(s.topic)}</td>`
       : `<td class="topic-cell"><span class="untitled">Untitled</span></td>`;
-    return `<tr>
+    const hitPct = fmtPct(hitRate(s.input, s.cache_read, s.cache_creation));
+    return `<tr class="clickable-row" data-session-id="${esc(s.session_id)}">
       <td class="muted" style="font-family:monospace">${esc(s.session_id.slice(0, 8))}&hellip;</td>
       <td>${esc(s.project)}</td>
       ${titleCell}
@@ -1752,11 +1851,67 @@ function renderSessionsTable(sessions) {
       <td class="num">${s.turns}</td>
       <td class="num">${fmt(s.input)}</td>
       <td class="num">${fmt(s.output)}</td>
+      <td class="num">${hitPct}</td>
       ${costCell}
     </tr>`;
   }).join('');
   renderTableToggle('sessions-foot', sessions.length, sessionsLimit, 'lessSessionRows', 'moreSessionRows', 'exportSessionsCSV');
 }
+
+// Renders the main-agent-vs-subagent cache/token split for one session, shown
+// in the row inserted by toggleSessionDetail. by_agent has at most 2 rows
+// (is_subagent 0/1); individual dispatches come from top_dispatches, which
+// carries each subagent run's parent_session.
+function renderSessionAgentDetail(s) {
+  const byAgent = s.by_agent || [];
+  const main = byAgent.find(r => r.is_subagent === 0);
+  const sub = byAgent.find(r => r.is_subagent === 1);
+  const line = (label, r) => {
+    if (!r) return '';
+    const hr = fmtPct(hitRate(r.input, r.cache_read, r.cache_creation));
+    return `<div class="agent-split-row"><span>${esc(label)}</span><span>${hr} cache hit</span><span class="muted">${fmt(r.input)} in &middot; ${fmt(r.cache_read)} read &middot; ${fmt(r.cache_creation)} write</span></div>`;
+  };
+  const dispatches = (rawData.top_dispatches || []).filter(d => d.parent_session === s.session_id);
+  const dispatchLines = dispatches.map(d => {
+    const hr = fmtPct(hitRate(d.input, d.cache_read, d.cache_creation));
+    return `<div class="agent-split-row"><span>&#8627; ${esc(d.agent_type)}</span><span>${hr} cache hit</span><span class="muted">${fmt(d.input)} in &middot; ${fmt(d.cache_read)} read &middot; ${fmt(d.cache_creation)} write</span></div>`;
+  }).join('');
+  return `<div class="session-detail">
+    ${line('Main agent', main)}
+    ${sub ? line('Subagents (combined)', sub) : ''}
+    ${dispatchLines}
+  </div>`;
+}
+
+// Clicking a session row expands/collapses a detail row beneath it showing
+// the main-agent-vs-subagent cache split (#N). Only one row is expanded at a
+// time. Delegated from #sessions-body rather than inline onclick so a
+// session_id never has to be interpolated into an HTML attribute.
+function toggleSessionDetail(row) {
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains('session-detail-row')) {
+    next.remove();
+    row.classList.remove('expanded');
+    return;
+  }
+  document.querySelectorAll('#sessions-body .session-detail-row').forEach(el => el.remove());
+  document.querySelectorAll('#sessions-body tr.expanded').forEach(el => el.classList.remove('expanded'));
+  const s = lastFilteredSessions.find(x => x.session_id === row.dataset.sessionId);
+  if (!s) return;
+  row.classList.add('expanded');
+  const detail = document.createElement('tr');
+  detail.className = 'session-detail-row';
+  const td = document.createElement('td');
+  td.colSpan = SESSIONS_TABLE_COLS;
+  td.innerHTML = renderSessionAgentDetail(s);
+  detail.appendChild(td);
+  row.after(detail);
+}
+
+document.getElementById('sessions-body').addEventListener('click', (e) => {
+  const row = e.target.closest('tr[data-session-id]');
+  if (row) toggleSessionDetail(row);
+});
 
 function setModelSort(col) {
   if (modelSortCol === col) {
@@ -1945,10 +2100,11 @@ function exportModelCSV() {
 }
 
 function exportSessionsCSV() {
-  const header = ['Session', 'Project', 'Title', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
+  const header = ['Session', 'Project', 'Title', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Cache Hit %', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
     const cost = sessionCost(s);
-    return [s.session_id, s.project, s.topic, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
+    const hr = hitRate(s.input, s.cache_read, s.cache_creation);
+    return [s.session_id, s.project, s.topic, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, hr === null ? '' : (hr * 100).toFixed(1), cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);
 }
@@ -1970,13 +2126,14 @@ function exportProjectBranchCSV() {
 }
 
 function exportDispatchesCSV() {
-  const header = ['Type', 'Agent ID', 'Started', 'Model', 'Turns', 'Tool Uses', 'Duration (ms)', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Total Tokens', 'Est. Cost', 'Status'];
+  const header = ['Type', 'Agent ID', 'Started', 'Model', 'Turns', 'Tool Uses', 'Duration (ms)', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Cache Hit %', 'Total Tokens', 'Est. Cost', 'Status'];
   const rows = lastFilteredDispatches.map(d => {
     const total = d.input + d.output + d.cache_read + d.cache_creation;
     const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation, d.cache_creation_1h);
+    const hr = hitRate(d.input, d.cache_read, d.cache_creation);
     return [d.agent_type, d.agent_id, d.start, d.model, d.turns,
             d.tool_uses != null ? d.tool_uses : '', d.duration_ms != null ? d.duration_ms : '',
-            d.input, d.output, d.cache_read, d.cache_creation, total, cost.toFixed(4), d.status || ''];
+            d.input, d.output, d.cache_read, d.cache_creation, hr === null ? '' : (hr * 100).toFixed(1), total, cost.toFixed(4), d.status || ''];
   });
   downloadCSV('subagent_dispatches', header, rows);
 }
