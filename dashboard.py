@@ -23,6 +23,14 @@ DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usag
 # would misfire there because the Marketplace publish lags the GitHub release).
 SURFACE = "web"
 
+# Client-side auto-refresh (see scheduleAutoRefresh in the served JS) polls
+# every 30s while the selected date range includes today. Some deployments'
+# data can't change between polls -- e.g. a scan that only ever runs once at
+# process start -- so this is an opt-out via env var rather than a flag,
+# matching CLAUDE_USAGE_DB's own precedent above. Defaults to upstream's
+# original always-on behavior; unset, nothing changes.
+AUTO_REFRESH = os.environ.get("CLAUDE_USAGE_AUTO_REFRESH", "1") not in ("0", "false", "no")
+
 
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
@@ -1931,7 +1939,7 @@ async function loadData() {
       if (rawData === null) setTimeout(loadData, 3000);
       return;
     }
-    const refreshNote = rangeIncludesToday(selectedRange) ? '<br>Auto-refresh in 30s' : '';
+    const refreshNote = (APP_CONFIG.autoRefresh !== false && rangeIncludesToday(selectedRange)) ? '<br>Auto-refresh in 30s' : '';
     document.getElementById('meta').innerHTML = 'Updated: ' + esc(d.generated_at) + refreshNote;
 
     const isFirstLoad = rawData === null;
@@ -1963,14 +1971,15 @@ async function loadData() {
 let autoRefreshTimer = null;
 function scheduleAutoRefresh() {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (APP_CONFIG.autoRefresh === false) return;
   if (rangeIncludesToday(selectedRange)) {
     autoRefreshTimer = setInterval(loadData, 30000);
   }
 }
 
 // ── Footer meta: version, extension promo, update check ──────────────────────
-// APP_CONFIG is injected server-side (see do_GET). { version, surface }.
-const APP_CONFIG = window.APP_CONFIG || { version: '', surface: 'web' };
+// APP_CONFIG is injected server-side (see do_GET). { version, surface, autoRefresh }.
+const APP_CONFIG = window.APP_CONFIG || { version: '', surface: 'web', autoRefresh: true };
 const REPO_URL = 'https://github.com/phuryn/claude-usage';
 const MARKETPLACE_URL = 'https://marketplace.visualstudio.com/items?itemName=PawelHuryn.claude-usage-phuryn';
 const UPDATE_CACHE_KEY = 'cu_update_check';
@@ -2221,10 +2230,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # URLs don't fall through to 404.
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
-            # Inject runtime config (version + surface) the page can't know at
-            # author time. json.dumps produces a valid JS object literal for the
-            # `window.APP_CONFIG = __APP_CONFIG_JSON__;` placeholder in the head.
-            config = json.dumps({"version": VERSION, "surface": SURFACE})
+            # Inject runtime config (version + surface + auto-refresh) the page
+            # can't know at author time. json.dumps produces a valid JS object
+            # literal for the `window.APP_CONFIG = __APP_CONFIG_JSON__;`
+            # placeholder in the head.
+            config = json.dumps({"version": VERSION, "surface": SURFACE, "autoRefresh": AUTO_REFRESH})
             html = HTML_TEMPLATE.replace("__APP_CONFIG_JSON__", config)
             body = html.encode("utf-8")
             self.send_response(200)
