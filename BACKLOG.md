@@ -2,7 +2,7 @@
 
 Started as a point-in-time triage of everything open on `phuryn/claude-usage` (upstream), taken 2026-09-13. Upstream's maintainer is inactive, so `Kalradia/claude-usage` is splitting off as its own line of development rather than staying a PR-feeder for upstream: we pull in whatever's worth keeping (preserving contributor authorship per AGENTS.md), fix it ourselves when it's not, and this doc is now our own working backlog — counted down as items land on our `main`, not a snapshot frozen at triage time. Classifications lean on the scope philosophy already encoded in `.claude/commands/triage.md`: keep the product surface tight ("parse local JSONLs, show usage and cost"), route real feature growth through a GitHub Discussion first, and never auto-merge anything security-sensitive, schema-changing, or over the 8-file/200-line size rails.
 
-Counts: **9 open issues, 15 open PRs** remaining. (Started at 11/18 on 2026-09-13; resolved since: `#162`→`#163` merged, `#160`→`#165` merged, `#173` closed as `#165`'s duplicate. Items marked `~~closed~~` below — merged or a duplicate we aren't taking — are dropped from the count; noting them stays useful so we don't reopen the same question later.)
+Counts: **8 open issues, 15 open PRs** remaining. (Started at 11/18 on 2026-09-13; resolved since: `#162`→`#163` merged, `#160`→`#165` merged, `#173` closed as `#165`'s duplicate, `#175` fixed directly. Items marked `~~closed~~` below — merged or a duplicate we aren't taking — are dropped from the count; noting them stays useful so we don't reopen the same question later.)
 
 ---
 
@@ -22,8 +22,11 @@ These are the most valuable items in the queue — they affect the numbers the t
 ### ~~#162 (issue) → #163 (PR, `MildlyMeticulous`)~~ — done
 Shipped 2026-09-13: merged `#163` (thanks `@MildlyMeticulous`) plus a follow-up ("finish 1h-TTL cache pricing across the dashboard + backfill old DBs") to close the remaining gaps. 1-hour-TTL cache writes now bill at 2x input instead of the 5-minute 1.25x rate.
 
-### #175 (issue) — Sonnet 5 priced at stale $3/$15 instead of $2/$10
-Clear, well-evidenced pricing-table bug (isolated to the `claude-sonnet-5` mapping; every other model reconciles correctly). **No PR exists.** A comment from `HaydenHaines` claims a fix ready with a specific test count ("143 passed in 1.46s") but never opened a PR — see the caution note at the bottom of this doc before trusting that comment. This is a small, mechanical pricing-table fix in `cli.py PRICING` + `dashboard.py PRICING` (kept in sync per AGENTS.md) — worth just fixing directly rather than waiting.
+### ~~#175 (issue) — Sonnet 5 priced at stale $3/$15 instead of $2/$10~~ — done
+Shipped 2026-09-13: added an explicit `claude-sonnet-5` entry to `PRICING` in both `cli.py` and `dashboard.py` ($2/$10, $0.20 cache read, $2.50 5-min cache write), and repointed the generic "sonnet" substring fallback at it instead of the stale `claude-sonnet-4-6` rate. Confirmed no PR ever existed upstream (`HaydenHaines`'s claimed fix was never opened as a PR — see the caution note at the bottom of this doc) — fixed directly instead of waiting.
+
+### Kalradia/claude-usage#1 (issue, this fork) — pricing table isn't effective-dated
+Filed 2026-09-13 as a follow-up to #175: `PRICING` is a single flat table, so editing a rate (e.g. for a real future repricing) silently recomputes the cost of *every past session* at the new rate instead of the rate actually in effect when those tokens were billed. Structural gap, not covered by the #175 fix. See the issue for the fuller writeup.
 
 ### ~~#160 (issue) — sub-agent turns priced at the session's primary-model rate~~ — done
 Two independent, competing fixes existed for this: **#165** (`blineadam`) and ~~#173~~ (`ollo12-prog`, **closed — duplicate, not taken**), both touching `dashboard.py` + tests with the same `by_model` breakdown approach. Compared both diffs 2026-09-13: near-identical, but #165 additionally adds `sessionIsBillable(s)` (checks billability across the whole per-model breakdown, not just the primary-model label — handles a session whose primary label is non-billable but which dispatched a billable sub-agent), which #173's own PR body calls "deliberately unchanged... out of scope." Merged **#165** (thanks `@blineadam`) to `main`. Neither PR had been updated for the #162/#163 1h-TTL cache pricing work that landed first, so a follow-up patch was folded into the merge: `_session_model_breakdowns`'s SQL now also sums `cache_creation_1h_tokens`, and `sessionCost()` passes it as `calcCost`'s 6th arg — otherwise `TestCalcCostCallSites` would fail and the by_model tables would silently under-bill 1-hour cache writes.
@@ -105,7 +108,7 @@ Three separate threads (**#175**, **#159**, and the severity claims inside **#16
 ## Suggested pass order
 
 1. **#167** — get the private disclosure channel open; everything else can proceed in parallel.
-2. Pricing correctness: ~~#163~~ (done), ~~#165~~ (done, ~~#173~~ closed as duplicate), **#175** (just fix it, it's small).
+2. Pricing correctness: ~~#163~~ (done), ~~#165~~ (done, ~~#173~~ closed as duplicate), ~~#175~~ (done). New: the effective-dated-pricing issue filed as its follow-up.
 3. Small no-brainers: **#155**, **#172**, **#169**.
 4. Worktree fix: **#154** (don't wait on #179's bundle).
 5. Dashboard staleness: read **#161** fully, decide vs. **#157**, reconcile with the local `CLAUDE_USAGE_AUTO_REFRESH` commits already sitting on this fork's `main`.

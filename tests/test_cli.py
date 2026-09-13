@@ -17,7 +17,7 @@ class TestGetPricing(unittest.TestCase):
     def test_all_known_models_have_pricing(self):
         for model in ("claude-fable-5", "claude-mythos-5",
                        "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
-                       "claude-sonnet-4-7", "claude-sonnet-4-6", "claude-sonnet-4-5",
+                       "claude-sonnet-5", "claude-sonnet-4-7", "claude-sonnet-4-6", "claude-sonnet-4-5",
                        "claude-haiku-4-7", "claude-haiku-4-6", "claude-haiku-4-5"):
             p = get_pricing(model)
             self.assertGreater(p["input"], 0, f"Missing input price for {model}")
@@ -47,6 +47,21 @@ class TestGetPricing(unittest.TestCase):
             p = get_pricing(model)
             self.assertEqual(p["input"], 10.00, f"{model} should map to Fable pricing")
             self.assertEqual(p["output"], 50.00, f"{model} should map to Fable pricing")
+
+    def test_sonnet_5_has_explicit_entry(self):
+        """Regression guard for issue #175 — Sonnet 5 must be priced at its
+        actual $2/$10 rate, not fall through to the stale Sonnet 4.x $3/$15 rate."""
+        self.assertIn("claude-sonnet-5", PRICING)
+        p = get_pricing("claude-sonnet-5")
+        self.assertEqual(p["input"], 2.00)
+        self.assertEqual(p["output"], 10.00)
+        self.assertEqual(p["cache_read"], 0.20)
+        self.assertEqual(p["cache_write"], 2.50)
+
+    def test_sonnet_5_with_date_suffix(self):
+        p = get_pricing("claude-sonnet-5-20260901")
+        self.assertEqual(p["input"], 2.00)
+        self.assertEqual(p["output"], 10.00)
 
     def test_opus_4_8_has_explicit_entry(self):
         """Regression guard for issue #133 — Opus 4.8 must be present, not just
@@ -80,9 +95,11 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["output"], 25.00)
 
     def test_substring_match_sonnet(self):
+        """Unknown Sonnet variants resolve to the current-generation (Sonnet 5)
+        rate, not a stale prior-generation rate (#175)."""
         p = get_pricing("custom-sonnet-variant")
-        self.assertEqual(p["input"], 3.00)
-        self.assertEqual(p["output"], 15.00)
+        self.assertEqual(p["input"], 2.00)
+        self.assertEqual(p["output"], 10.00)
 
     def test_substring_match_haiku(self):
         p = get_pricing("experimental-haiku-fast")

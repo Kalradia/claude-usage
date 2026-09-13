@@ -4,6 +4,7 @@
 
 ### Scanner / CLI
 
+- Fixed **`claude-sonnet-5` usage being priced at the stale Sonnet 4.x rate** ($3/$15 per MTok input/output) instead of its actual, permanent rate ($2/$10 input/output, $0.20 cache read, $2.50 5-min cache write). `claude-sonnet-5` had no explicit `PRICING` entry, so it fell through the substring fallback to `claude-sonnet-4-6` — overstating Sonnet 5 costs by ~50% in `today` / `week` / `stats` and every dashboard cost view. The generic "sonnet" substring fallback (for unrecognized future variants) now also defaults to the current-generation rate rather than a fixed prior-generation one (#175).
 - Fixed **1-hour-TTL cache writes being priced at the 5-minute rate**. Claude Code writes most of its prompt cache with a 1-hour TTL, which bills at 2x base input rather than 1.25x. The scanner now records the 1-hour portion (`usage.cache_creation.ephemeral_1h_input_tokens`) in a new `turns.cache_creation_1h_tokens` column, and `today` / `week` / `stats` price it at 2x input — on the reporter's corpus this raised reported total cost by ~9.6% (#162, #163, thanks @MildlyMeticulous).
 - Existing databases are **backfilled once on the next scan**: already-processed transcripts are re-read for their TTL breakdown, so historical costs are corrected without a full rescan. Transcripts from before Claude Code recorded the breakdown stay on the 5-minute rate (#162).
 

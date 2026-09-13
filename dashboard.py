@@ -857,6 +857,7 @@ const PRICING = {
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
+  'claude-sonnet-5':   { input:  2.00, output: 10.00, cache_write:  2.50, cache_read: 0.20 },
   'claude-sonnet-4-7': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
@@ -881,7 +882,7 @@ function getPricing(model) {
   const m = model.toLowerCase();
   if (m.includes('fable') || m.includes('mythos')) return PRICING['claude-fable-5'];
   if (m.includes('opus'))   return PRICING['claude-opus-4-8'];
-  if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
+  if (m.includes('sonnet')) return PRICING['claude-sonnet-5'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
   return null;
 }
