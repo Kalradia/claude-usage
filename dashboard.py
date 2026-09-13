@@ -2287,9 +2287,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # frozen at def time and would otherwise target the real paths).
             import scanner
             db_path = DB_PATH
+            env_dir = os.environ.get("CLAUDE_USAGE_PROJECTS_DIR")
             result = scanner.scan(
                 db_path=db_path,
-                projects_dirs=scanner.DEFAULT_PROJECTS_DIRS,
+                projects_dirs=[Path(env_dir)] if env_dir else scanner.DEFAULT_PROJECTS_DIRS,
                 verbose=False,
             )
             body = json.dumps(result).encode("utf-8")
