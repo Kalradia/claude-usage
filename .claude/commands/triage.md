@@ -149,7 +149,7 @@ Templates (use the actual landed PR number and bumped version):
 
 - Read `CHANGELOG.md`, find the latest version header (regex `## v(\d+)\.(\d+)\.(\d+)`).
 - Increment the **patch** segment only (`v1.1.0 → v1.1.1`). If nothing was actually merged in step 3, **skip the bump** and skip step 7 (push).
-- Insert a new section at the top: `## v<X.Y.Z+1> — TBD` with bullets grouped by area (Dashboard / Scanner / Project), one bullet per landed change with PR ref and author thanks. The maintainer fills in the date when releasing; the auto-tag workflow then creates the matching git tag on the merge to main. See "Versioning and releases" in AGENTS.md for the full release flow.
+- Insert a new section at the top: `## v<X.Y.Z+1> — TBD` with bullets grouped by area (Dashboard / Scanner / Project), one bullet per landed change with PR ref and author thanks. The maintainer fills in the date when releasing; the auto-tag workflow then creates the matching git tag on the merge to main. See RELEASING.md for the full release flow.
 - Commit as `docs(CHANGELOG): bump to v<X.Y.Z+1>` with Claude + Codex co-author trailers.
 
 ### 6. Codex review of cumulative diff
