@@ -105,8 +105,7 @@ class TestSessionAgentBreakdown(unittest.TestCase):
 
     def test_subagent_count_survives_missing_agents_table_row(self):
         """Some dispatches have no matching row in `agents` (dispatch
-        metadata wasn't captured), which leaves top_dispatches'
-        parent_session null for them. subagent_count must still count them
+        metadata wasn't captured). subagent_count must still count them
         since it's derived straight from turns, not the agents LEFT JOIN (#N)."""
         conn = get_db(self.db_path)
         insert_turns(conn, [
@@ -119,8 +118,24 @@ class TestSessionAgentBreakdown(unittest.TestCase):
         d = dashboard.get_dashboard_data(self.db_path)
         sess1 = next(s for s in d["sessions_all"] if s["session_id"] == "sess-1")
         self.assertEqual(sess1["subagent_count"], 2)
+
+    def test_dispatch_parent_session_falls_back_to_turns_session_id(self):
+        """Without a matching `agents` row, top_dispatches used to leave
+        parent_session null, making the dispatch invisible in the session's
+        expanded detail even though its tokens were counted in by_agent.
+        Claude Code stamps a subagent's own turns with the parent
+        conversation's session id, so that's a reliable fallback (#N)."""
+        conn = get_db(self.db_path)
+        insert_turns(conn, [
+            _turn("sess-1", "m-sub3", inp=10, out=5, cache_read=20, cache_creation=5,
+                  is_subagent=1, agent_id="agent-orphan"),
+        ])
+        conn.commit()
+        conn.close()
+
+        d = dashboard.get_dashboard_data(self.db_path)
         orphan_dispatch = next(r for r in d["top_dispatches"] if r["agent_id"] == "agent-orphan")
-        self.assertIsNone(orphan_dispatch["parent_session"])
+        self.assertEqual(orphan_dispatch["parent_session"], "sess-1")
 
 
 class TestCacheHitRateUI(unittest.TestCase):

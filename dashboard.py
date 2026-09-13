@@ -271,6 +271,13 @@ def get_dashboard_data(db_path=DB_PATH):
     } for r in subagent_daily_rows]
 
     # ── Top individual subagent dispatches (one row per agent_id) ─────────────
+    # parent_session prefers the agents table's dispatched_in_session (captured
+    # from the parent's tool_result) but falls back to the subagent's own
+    # turns.session_id — Claude Code stamps subagent transcript records with the
+    # parent conversation's session id, so this still resolves correctly even
+    # when the dispatch's tool_result metadata wasn't captured (e.g. an older
+    # transcript format), which otherwise left parent_session null and made the
+    # dispatch invisible in a session's expanded detail.
     top_dispatch_rows = conn.execute(f"""
         SELECT
             t.agent_id                               as agent_id,
@@ -283,7 +290,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(t.cache_creation_tokens)             as cache_creation,
             SUM(t.cache_creation_1h_tokens)          as cache_creation_1h,
             COUNT(*)                                 as turns,
-            a.dispatched_in_session                  as parent_session,
+            COALESCE(a.dispatched_in_session, MIN(t.session_id)) as parent_session,
             a.total_duration_ms                      as duration_ms,
             a.tool_use_count                         as tool_uses,
             a.status                                 as status
@@ -687,8 +694,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
         <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
         <th class="sortable" onclick="setSessionSort('subagents')">Subagents <span class="sort-icon" id="sort-icon-subagents"></span></th>
-        <th class="sortable" onclick="setSessionSort('hit_rate_main')">Main Cache Hit % <span class="sort-icon" id="sort-icon-hit_rate_main"></span></th>
-        <th class="sortable" onclick="setSessionSort('hit_rate_sub')">Subagent Cache Hit % <span class="sort-icon" id="sort-icon-hit_rate_sub"></span></th>
+        <th class="sortable" title="Main agent cache hit %" onclick="setSessionSort('hit_rate_main')">Main Hit % <span class="sort-icon" id="sort-icon-hit_rate_main"></span></th>
+        <th class="sortable" title="Subagent cache hit %" onclick="setSessionSort('hit_rate_sub')">Sub Hit % <span class="sort-icon" id="sort-icon-hit_rate_sub"></span></th>
         <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
@@ -1860,8 +1867,7 @@ function moreDispatchRows(){ dispatchesLimit = nextTableLimit(dispatchesLimit, l
 function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatches(lastFilteredDispatches);            scrollTableToTop('dispatches-body'); }
 
 // Sessions table columns: Session, Project, Title, Last Active, Duration,
-// Model, Turns, Input, Output, Subagents, Main Cache Hit %, Subagent Cache
-// Hit %, Est. Cost.
+// Model, Turns, Input, Output, Subagents, Main Hit %, Sub Hit %, Est. Cost.
 const SESSIONS_TABLE_COLS = 13;
 
 function renderSessionsTable(sessions) {
