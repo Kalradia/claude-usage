@@ -1,10 +1,10 @@
 ---
-description: Weekly autonomous triage of claude-usage — merge no-brainers to DEV, run tests, Codex collab, close duplicates / scope-violations, bump CHANGELOG by patch, push DEV. Leaves DEV→main release decision for the maintainer.
+description: Weekly autonomous triage of claude-usage — merge no-brainers to develop, run tests, Codex collab, close duplicates / scope-violations, bump CHANGELOG by patch, push develop. Leaves develop→main release decision for the maintainer.
 ---
 
 # /triage — weekly claude-usage triage
 
-Designed to be run **headless** via Windows Task Scheduler (`claude -p "/triage"`) once a week. Operates in the local working copy on the `DEV` branch only. **Never pushes to `main`.**
+Designed to be run **headless** via Windows Task Scheduler (`claude -p "/triage"`) once a week. Operates in the local working copy on the `develop` branch only. **Never pushes to `main`.**
 
 ## Identity & tone
 
@@ -16,7 +16,7 @@ Designed to be run **headless** via Windows Task Scheduler (`claude -p "/triage"
 ## Hard safety rails (do not violate)
 
 1. **Dirty-worktree guard.** Before any `checkout` / `reset` / `merge`, run `git status --porcelain`. If output is non-empty, **abort immediately** — there is local maintainer work the routine would otherwise destroy. Do not stash, do not `--force`. Exit with a self-comment (step 8) explaining why the run was skipped.
-2. **Never push to `main`.** Final release is the maintainer's call. DEV gets pushed; main never does.
+2. **Never push to `main`.** Final release is the maintainer's call. develop gets pushed; main never does.
 3. **Never close a PR or issue opened by the repo owner** (`gh repo view --json owner --jq .owner.login`). Those are intentional, not triageable.
 4. **Never auto-merge a PR** that:
    - touches more than 8 files, OR
@@ -26,8 +26,8 @@ Designed to be run **headless** via Windows Task Scheduler (`claude -p "/triage"
    - modifies anything under `.github/workflows/`, `scripts/`, `.claude/`, OR
    - includes deletions or renames of existing files (not just additions/edits), OR
    - includes a database schema change (`init_db` body, new `CREATE TABLE`, new `ALTER TABLE`).
-5. **Never push DEV if `python -m unittest discover -s tests -v` fails on `main` first.** Baseline must be green before any work.
-6. **Never push DEV if the final test sweep after merges fails.** Roll back, leave nothing on DEV.
+5. **Never push develop if `python -m unittest discover -s tests -v` fails on `main` first.** Baseline must be green before any work.
+6. **Never push develop if the final test sweep after merges fails.** Roll back, leave nothing on develop.
 7. **Stop if any external dependency is missing** (`gh`, `codex`, `python`) — exit cleanly with a noted error rather than partial state.
 8. **Codex sign-off is mechanical, not advisory.** Before any `gh pr close` / `gh issue close` fires, a file at `/tmp/triage-codex-signoff.md` must exist containing (a) every item on the close list, and (b) the exact phrase `Codex sign-off: close list approved` on its own line. Codex generates this in step 2. No file → no closes. If Codex says "uncertain" on any item, that item stays open regardless.
 9. **If unclear, leave it open and comment.** Don't guess. Surfacing as "needs maintainer review" is always preferable to a wrong close.
@@ -45,12 +45,12 @@ command -v codex                                 || exit 1
 git fetch origin
 git checkout main && git pull --ff-only
 python -m unittest discover -s tests             || exit 1   # SAFETY RAIL 5
-git checkout DEV
-git merge --ff-only origin/DEV                                # fast-forward to remote DEV
-git merge --ff-only main                                      # bring DEV up to date with main
+git checkout develop
+git merge --ff-only origin/develop                                # fast-forward to remote develop
+git merge --ff-only main                                      # bring develop up to date with main
 ```
 
-If either `merge --ff-only` fails (DEV diverged from origin/DEV or from main), **stop**: divergence means there's unreleased work the maintainer staged. Don't touch it. Post a self-comment (step 8) noting the routine paused.
+If either `merge --ff-only` fails (develop diverged from origin/develop or from main), **stop**: divergence means there's unreleased work the maintainer staged. Don't touch it. Post a self-comment (step 8) noting the routine paused.
 
 **Never run `git reset --hard` anywhere in this workflow.** It can silently destroy local work even after the dirty-worktree check. The temp-branch pattern in step 3 makes reset unnecessary.
 
@@ -77,15 +77,15 @@ Use `~/.claude/skills/codex-ideation/scripts/codex.py --new --read <brief-file> 
 
 ### 3. Execute merges on a disposable branch
 
-**Never merge directly to `DEV`** — too easy to leave it in a half-merged state if a later step fails. Use a temporary branch instead:
+**Never merge directly to `develop`** — too easy to leave it in a half-merged state if a later step fails. Use a temporary branch instead:
 
 ```
-git checkout -b triage-run/$(date +%Y-%m-%d) DEV    # bash
+git checkout -b triage-run/$(date +%Y-%m-%d) develop    # bash
 # OR (PowerShell):
-git checkout -b "triage-run/$(Get-Date -Format yyyy-MM-dd)" DEV
+git checkout -b "triage-run/$(Get-Date -Format yyyy-MM-dd)" develop
 ```
 
-All merges, tests, and follow-up commits land on this temp branch. If any step fails, the temp branch gets deleted and `DEV` is untouched — no rollback gymnastics needed.
+All merges, tests, and follow-up commits land on this temp branch. If any step fails, the temp branch gets deleted and `develop` is untouched — no rollback gymnastics needed.
 
 For each agreed bug-fix:
 
@@ -100,17 +100,17 @@ python -m unittest discover -s tests
 ```
 
 If `unittest` fails, **abort the entire run** (don't try to recover this PR and keep going):
-- Delete the temp branch (`git checkout DEV && git branch -D triage-run/<date>`).
-- `DEV` is exactly where it was before the run started.
+- Delete the temp branch (`git checkout develop && git branch -D triage-run/<date>`).
+- `develop` is exactly where it was before the run started.
 - Post a self-comment (step 8) noting which PR's merge broke tests.
 
 For partial merges, `git cherry-pick <commit-sha>` against the specific upstream commit (preserves authorship). If the fix isn't a clean commit, apply hunks manually with `git commit --author="<name> <email>"` to preserve attribution; never silently take credit.
 
 **Add a regression test if one isn't already present.** Verify by temporarily reverting the fix (`git revert --no-commit <sha>` then run tests then `git revert --abort`) — the test must fail without the fix. Re-apply if needed, commit the test as a separate Claude+Codex co-authored commit, continue.
 
-### 3a. (Reserved) DEV fast-forward happens in step 7, not here.
+### 3a. (Reserved) develop fast-forward happens in step 7, not here.
 
-The temp branch keeps all merges + tests + the CHANGELOG bump + any Codex-review fixups. `DEV` only moves once at the very end (step 7) when the full sequence is green.
+The temp branch keeps all merges + tests + the CHANGELOG bump + any Codex-review fixups. `develop` only moves once at the very end (step 7) when the full sequence is green.
 
 ### 4. Stage close messages (do not execute yet)
 
@@ -131,7 +131,7 @@ Templates (use the actual landed PR number and bumped version):
 > _— Claude Code & Codex collab_
 
 **Definitely-fixed issue:**
-> Closing as fixed in **v<X.Y.Z>** — see the linked PR. Please reopen if it still reproduces after pulling `DEV`.
+> Closing as fixed in **v<X.Y.Z>** — see the linked PR. Please reopen if it still reproduces after pulling `develop`.
 >
 > _— Claude Code & Codex collab_
 
@@ -154,7 +154,7 @@ Templates (use the actual landed PR number and bumped version):
 
 ### 6. Codex review of cumulative diff
 
-Diff the **temp branch HEAD** (which is what step 3a will fast-forward DEV to), not DEV itself — DEV is still pointing at the pre-run commit:
+Diff the **temp branch HEAD** (which is what step 3a will fast-forward develop to), not develop itself — develop is still pointing at the pre-run commit:
 
 ```
 git diff origin/main..HEAD > /tmp/triage-diff.diff
@@ -163,15 +163,15 @@ git diff origin/main..HEAD > /tmp/triage-diff.diff
 
 **Apply any concrete fixes Codex flags as new commits on the temp branch** before proceeding. Re-run the full test suite after each fix.
 
-### 7. Fast-forward DEV and push
+### 7. Fast-forward develop and push
 
 Only if (a) merges happened on the temp branch, (b) full test suite passes, (c) Codex review found nothing blocking:
 
 ```
-git checkout DEV
+git checkout develop
 git merge --ff-only triage-run/<date>
 git branch -d triage-run/<date>
-git push origin DEV
+git push origin develop
 ```
 
 ### 7a. Execute the staged closes
@@ -185,7 +185,7 @@ After a successful push **OR after any abort that happened with actionable items
 - PRs merged (with #s and authors)
 - PRs/issues closed (counts by category)
 - Anything escalated for maintainer review
-- One-line: "DEV is ready for release decision."
+- One-line: "develop is ready for release decision."
 
 Sign with the standard signature.
 
@@ -195,7 +195,7 @@ If step 3 merged zero PRs and step 4 closed zero items, do not push, do not bump
 
 ## What stays the maintainer's call
 
-- DEV → main merges (releases). The routine never does this.
+- develop → main merges (releases). The routine never does this.
 - Anything Codex disagreed on, or anything with a security/auth keyword in it.
 - Issues #92 (Dashboard Not Reporting New Data — possibly upstream) and similar diagnostic-required reports.
 - Refactors and architecture changes.

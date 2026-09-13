@@ -18,7 +18,7 @@
 # What this DOES NOT do:
 #   - Does not grant any new permissions. Claude Code's settings govern
 #     what the routine can do.
-#   - Does not push to main. Per /triage workflow, only DEV is pushed.
+#   - Does not push to main. Per /triage workflow, only develop is pushed.
 
 [CmdletBinding()]
 param(
@@ -83,7 +83,7 @@ $task = New-ScheduledTask `
     -Trigger $trigger `
     -Settings $settings `
     -Principal $principal `
-    -Description "Run /triage on $RepoRoot every $DayOfWeek at $Time. Pushes DEV, never main."
+    -Description "Run /triage on $RepoRoot every $DayOfWeek at $Time. Pushes develop, never main."
 
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 
