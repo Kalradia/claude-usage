@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # runtime version has to live here as a constant. Keep this in lockstep with the
 # top CHANGELOG heading and vscode-extension/package.json (a parity test guards
 # all three; see tests/test_version.py).
-VERSION = "1.5.5"
+VERSION = "1.5.6"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
@@ -170,6 +170,22 @@ def _extract_title(record):
     return None
 
 
+def _cache_creation_1h(usage, cache_creation):
+    """Return the 1-hour-TTL portion of a turn's cache-creation tokens.
+
+    Cache writes bill at 1.25x input for the 5-minute TTL and 2x for the 1-hour
+    TTL. The API breaks ``cache_creation_input_tokens`` down by TTL in
+    ``usage.cache_creation``; older logs carry no breakdown, in which case the
+    whole bucket stays on the 5-minute rate (0 here). Clamped to
+    ``[0, cache_creation]`` so a malformed breakdown can't inflate cost.
+    """
+    breakdown = usage.get("cache_creation")
+    if not isinstance(breakdown, dict):
+        return 0
+    value = breakdown.get("ephemeral_1h_input_tokens", 0) or 0
+    return max(0, min(value, cache_creation))
+
+
 def _backfill_topics(conn, jsonl_files):
     """One-time backfill of topics for a DB created before topic support.
 
@@ -221,6 +237,56 @@ def _backfill_topics(conn, jsonl_files):
             "AND (topic IS NULL OR topic = '')", (title, sid))
     conn.commit()
     return len(titles)
+
+
+def _backfill_cache_1h(conn, jsonl_files):
+    """One-time backfill of turns.cache_creation_1h_tokens for an older DB.
+
+    Turns scanned before the column existed default to 0 (every cache write on
+    the 5-minute rate), and their transcripts are already in processed_files, so
+    an incremental scan never revisits them. Re-read just the assistant records
+    that carry a TTL breakdown and set the column on the matching turn by
+    message_id. Only this column is written, so token totals cannot drift; turns
+    without a message_id can't be matched and keep 0. Runs once, gated by a flag
+    in schema_meta (see scan()). Returns the number of turns updated.
+    """
+    if conn.execute("SELECT 1 FROM turns LIMIT 1").fetchone() is None:
+        return 0
+
+    values = {}  # message_id -> 1h tokens (last record per message wins)
+    for filepath in jsonl_files:
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    # Cheap prefilter: only records with a TTL breakdown carry
+                    # this key, so skip JSON-parsing everything else.
+                    if "ephemeral_1h_input_tokens" not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if record.get("type") != "assistant":
+                        continue
+                    msg = record.get("message") or {}
+                    message_id = msg.get("id")
+                    if not message_id:
+                        continue
+                    usage = msg.get("usage") or {}
+                    cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+                    values[message_id] = _cache_creation_1h(usage, cache_creation)
+        except Exception as e:
+            print(f"  Warning: error reading {filepath}: {e}")
+
+    # Repeat idx_turns_message_id's partial-index predicate: SQLite can't prove
+    # a bound "message_id = ?" is non-empty, so without it every UPDATE is a
+    # full table scan (minutes on a large DB instead of seconds).
+    cur = conn.executemany(
+        "UPDATE turns SET cache_creation_1h_tokens = ? WHERE message_id = ? "
+        "AND message_id IS NOT NULL AND message_id != ''",
+        [(v, mid) for mid, v in values.items() if v])
+    conn.commit()
+    return max(cur.rowcount, 0)
 
 
 def project_name_from_cwd(cwd):
@@ -408,13 +474,7 @@ def parse_jsonl_file(filepath):
                     output_tokens = usage.get("output_tokens", 0) or 0
                     cache_read = usage.get("cache_read_input_tokens", 0) or 0
                     cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
-                    # Cache writes bill at 1.25x input for the 5-minute TTL and 2x
-                    # for the 1-hour TTL. Older logs carry no breakdown, in which
-                    # case the whole bucket stays on the 5-minute rate as before.
-                    _cc_breakdown = usage.get("cache_creation") or {}
-                    cache_creation_1h = _cc_breakdown.get("ephemeral_1h_input_tokens", 0) or 0
-                    if cache_creation_1h > cache_creation:
-                        cache_creation_1h = cache_creation
+                    cache_creation_1h = _cache_creation_1h(usage, cache_creation)
 
                     # Only record turns that have actual token usage
                     if input_tokens + output_tokens + cache_read + cache_creation == 0:
@@ -617,6 +677,17 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         if verbose and filled:
             print(f"Backfilled topic for {filled} existing session(s).")
 
+    # One-time backfill of the 1-hour cache-write split (#162) for turns scanned
+    # before cache_creation_1h_tokens existed, gated by the schema_meta
+    # 'cache_1h_backfill_done' marker. Like the topic backfill it runs before the
+    # main loop, so on a fresh DB turns is empty and it returns without reading.
+    if _meta_get(conn, "cache_1h_backfill_done") != "1":
+        updated = _backfill_cache_1h(conn, jsonl_files)
+        _meta_set(conn, "cache_1h_backfill_done", "1")
+        conn.commit()
+        if verbose and updated:
+            print(f"Backfilled 1-hour cache-write split for {updated} existing turn(s).")
+
     new_files = 0
     updated_files = 0
     skipped_files = 0
@@ -743,13 +814,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             output_tokens = usage.get("output_tokens", 0) or 0
                             cache_read = usage.get("cache_read_input_tokens", 0) or 0
                             cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
-                            # Cache writes bill at 1.25x input for the 5-minute TTL and 2x
-                            # for the 1-hour TTL. Older logs carry no breakdown, in which
-                            # case the whole bucket stays on the 5-minute rate as before.
-                            _cc_breakdown = usage.get("cache_creation") or {}
-                            cache_creation_1h = _cc_breakdown.get("ephemeral_1h_input_tokens", 0) or 0
-                            if cache_creation_1h > cache_creation:
-                                cache_creation_1h = cache_creation
+                            cache_creation_1h = _cache_creation_1h(usage, cache_creation)
 
                             if input_tokens + output_tokens + cache_read + cache_creation == 0:
                                 continue

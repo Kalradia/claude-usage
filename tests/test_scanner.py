@@ -11,6 +11,7 @@ from scanner import (
     get_db, init_db, project_name_from_cwd, parse_jsonl_file,
     aggregate_sessions, upsert_sessions, insert_turns, scan,
     _backfill_topics, _meta_get, _meta_set,
+    _backfill_cache_1h, _cache_creation_1h,
 )
 
 
@@ -42,7 +43,7 @@ def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",
                            cache_read=10, cache_creation=5,
                            timestamp="2026-04-08T10:00:00Z",
                            cwd="/home/user/project",
-                           message_id=""):
+                           message_id="", cache_creation_1h=None):
     msg = {
         "model": model,
         "usage": {
@@ -53,6 +54,11 @@ def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",
         },
         "content": [],
     }
+    if cache_creation_1h is not None:
+        msg["usage"]["cache_creation"] = {
+            "ephemeral_5m_input_tokens": cache_creation - cache_creation_1h,
+            "ephemeral_1h_input_tokens": cache_creation_1h,
+        }
     if message_id:
         msg["id"] = message_id
     return json.dumps({
@@ -961,6 +967,143 @@ class TestTopicBackfill(unittest.TestCase):
         self.assertEqual(filled, 1)  # only 'fill' needed a topic
         self.assertEqual(conn.execute("SELECT topic FROM sessions WHERE session_id='keep'").fetchone()[0], "existing")
         self.assertEqual(conn.execute("SELECT topic FROM sessions WHERE session_id='fill'").fetchone()[0], "filled")
+        conn.close()
+
+
+class TestCacheCreation1h(unittest.TestCase):
+    """The 1-hour-TTL share of cache writes is recorded so it bills at 2x (#162)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects_dir = Path(self.tmpdir) / "projects" / "user" / "proj"
+        self.projects_dir.mkdir(parents=True)
+        self.db_path = Path(self.tmpdir) / "usage.db"
+        self.filepath = self.projects_dir / "sess-1.jsonl"
+
+    def _turn_1h(self, message_id):
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT cache_creation_tokens, cache_creation_1h_tokens FROM turns "
+            "WHERE message_id = ?", (message_id,)).fetchone()
+        conn.close()
+        return row
+
+    def test_helper_reads_breakdown(self):
+        usage = {"cache_creation": {"ephemeral_5m_input_tokens": 100,
+                                    "ephemeral_1h_input_tokens": 400}}
+        self.assertEqual(_cache_creation_1h(usage, 500), 400)
+
+    def test_helper_without_breakdown_is_zero(self):
+        self.assertEqual(_cache_creation_1h({}, 500), 0)
+        self.assertEqual(_cache_creation_1h({"cache_creation": None}, 500), 0)
+
+    def test_helper_clamps_to_aggregate_and_zero(self):
+        self.assertEqual(_cache_creation_1h(
+            {"cache_creation": {"ephemeral_1h_input_tokens": 900}}, 500), 500)
+        self.assertEqual(_cache_creation_1h(
+            {"cache_creation": {"ephemeral_1h_input_tokens": -5}}, 500), 0)
+
+    def test_parse_records_1h_portion(self):
+        with open(self.filepath, "w") as f:
+            f.write(_make_assistant_record(cache_creation=500, cache_creation_1h=400,
+                                           message_id="msg-1") + "\n")
+        _, turns, _, _ = parse_jsonl_file(str(self.filepath))
+        self.assertEqual(turns[0]["cache_creation_tokens"], 500)
+        self.assertEqual(turns[0]["cache_creation_1h_tokens"], 400)
+
+    def test_incremental_scan_records_1h_portion(self):
+        # Lines appended to an already-scanned file go through scan()'s own
+        # incremental parse path, not parse_jsonl_file.
+        with open(self.filepath, "w") as f:
+            f.write(_make_assistant_record(message_id="msg-1",
+                                           timestamp="2026-04-08T10:00:00Z") + "\n")
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+        import time
+        time.sleep(0.05)  # ensure mtime visibly changes so the file is re-read
+        with open(self.filepath, "a") as f:
+            f.write(_make_assistant_record(cache_creation=300, cache_creation_1h=200,
+                                           message_id="msg-2",
+                                           timestamp="2026-04-08T10:05:00Z") + "\n")
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+        self.assertEqual(tuple(self._turn_1h("msg-2")), (300, 200))
+
+
+class TestCache1hBackfill(unittest.TestCase):
+    """One-time backfill of the 1-hour cache-write split for older DBs (#162)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects_dir = Path(self.tmpdir) / "projects" / "user" / "proj"
+        self.projects_dir.mkdir(parents=True)
+        self.db_path = Path(self.tmpdir) / "usage.db"
+        self.filepath = self.projects_dir / "sess-1.jsonl"
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1",
+                                      timestamp="2026-04-08T09:00:00Z") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1",
+                                           cache_creation=500, cache_creation_1h=400,
+                                           timestamp="2026-04-08T09:01:00Z") + "\n")
+
+    def _scan(self):
+        return scan(projects_dir=self.projects_dir.parent.parent,
+                    db_path=self.db_path, verbose=False)
+
+    def _turn_1h(self):
+        conn = sqlite3.connect(self.db_path)
+        value = conn.execute("SELECT cache_creation_1h_tokens FROM turns "
+                             "WHERE message_id = 'msg-1'").fetchone()[0]
+        conn.close()
+        return value
+
+    def _reset_for_backfill(self):
+        """Simulate a DB scanned before the column existed: every turn at 0 and
+        the one-time 'done' marker cleared so the next scan re-runs the backfill."""
+        conn = get_db(self.db_path)
+        conn.execute("UPDATE turns SET cache_creation_1h_tokens = 0")
+        conn.execute("DELETE FROM schema_meta WHERE key = 'cache_1h_backfill_done'")
+        conn.commit()
+        conn.close()
+
+    def test_backfill_fills_1h_from_already_processed_file(self):
+        self._scan()
+        self._reset_for_backfill()
+        result = self._scan()  # file unchanged -> skipped, but backfill runs
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(self._turn_1h(), 400)
+
+    def test_backfill_runs_only_once(self):
+        self._scan()
+        self._reset_for_backfill()
+        self._scan()
+        conn = get_db(self.db_path)
+        self.assertEqual(_meta_get(conn, "cache_1h_backfill_done"), "1")
+        # Zero the column WITHOUT clearing the marker: a later scan must not
+        # refill it (the one-time backfill already ran).
+        conn.execute("UPDATE turns SET cache_creation_1h_tokens = 0")
+        conn.commit()
+        conn.close()
+        self._scan()
+        self.assertEqual(self._turn_1h(), 0)
+
+    def test_backfill_does_not_touch_token_totals(self):
+        self._scan()
+        conn = sqlite3.connect(self.db_path)
+        query = ("SELECT total_input_tokens, total_output_tokens, total_cache_read, "
+                 "total_cache_creation, turn_count FROM sessions")
+        before = conn.execute(query).fetchone()
+        conn.close()
+        self._reset_for_backfill()
+        self._scan()
+        conn = sqlite3.connect(self.db_path)
+        self.assertEqual(conn.execute(query).fetchone(), before)
+        conn.close()
+
+    def test_backfill_noops_on_empty_db(self):
+        conn = get_db(self.db_path)
+        init_db(conn)
+        self.assertEqual(_backfill_cache_1h(conn, [str(self.filepath)]), 0)
         conn.close()
 
 

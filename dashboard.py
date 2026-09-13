@@ -105,13 +105,21 @@ def get_dashboard_data(db_path=DB_PATH):
     } for r in hourly_rows]
 
     # ── All sessions (client filters by range and model) ──────────────────────
+    # The 1-hour cache-write split isn't denormalized onto sessions; sum it from
+    # turns so session and project costs price those writes at 2x input (#162).
     session_rows = conn.execute("""
         SELECT
-            session_id, project_name, first_timestamp, last_timestamp,
+            s.session_id, project_name, first_timestamp, last_timestamp,
             total_input_tokens, total_output_tokens,
             total_cache_read, total_cache_creation, model, turn_count,
-            git_branch, topic
-        FROM sessions
+            git_branch, topic,
+            COALESCE(t1h.cache_creation_1h, 0) as total_cache_creation_1h
+        FROM sessions s
+        LEFT JOIN (
+            SELECT session_id, SUM(cache_creation_1h_tokens) as cache_creation_1h
+            FROM turns
+            GROUP BY session_id
+        ) t1h ON t1h.session_id = s.session_id
         ORDER BY last_timestamp DESC
     """).fetchall()
 
@@ -139,6 +147,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "output":        r["total_output_tokens"] or 0,
             "cache_read":    r["total_cache_read"] or 0,
             "cache_creation": r["total_cache_creation"] or 0,
+            "cache_creation_1h": r["total_cache_creation_1h"] or 0,
         })
 
     # ── Subagent breakdown by type, by day & model ────────────────────────────
@@ -1199,20 +1208,21 @@ function applyFilter() {
     d.output         += r.output;
     d.cache_read     += r.cache_read;
     d.cache_creation += r.cache_creation;
-    d.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+    d.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation, r.cache_creation_1h);
   }
   const daily = Object.values(dailyMap).sort((a, b) => a.day.localeCompare(b.day));
 
   // By model: aggregate tokens + turns from daily data
   const modelMap = {};
   for (const r of filteredDaily) {
-    if (!modelMap[r.model]) modelMap[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0 };
+    if (!modelMap[r.model]) modelMap[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0, cache_creation_1h: 0, turns: 0, sessions: 0 };
     const m = modelMap[r.model];
-    m.input          += r.input;
-    m.output         += r.output;
-    m.cache_read     += r.cache_read;
-    m.cache_creation += r.cache_creation;
-    m.turns          += r.turns;
+    m.input             += r.input;
+    m.output            += r.output;
+    m.cache_read        += r.cache_read;
+    m.cache_creation    += r.cache_creation;
+    m.cache_creation_1h += r.cache_creation_1h;
+    m.turns             += r.turns;
   }
 
   // Filter sessions by model + date range
@@ -1238,7 +1248,7 @@ function applyFilter() {
     p.cache_creation += s.cache_creation;
     p.turns          += s.turns;
     p.sessions++;
-    p.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    p.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation, s.cache_creation_1h);
   }
   const byProject = Object.values(projMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
@@ -1254,7 +1264,7 @@ function applyFilter() {
     pb.cache_creation += s.cache_creation;
     pb.turns          += s.turns;
     pb.sessions++;
-    pb.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    pb.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation, s.cache_creation_1h);
   }
   const byProjectBranch = Object.values(projBranchMap).sort((a, b) => b.cost - a.cost);
 
@@ -1266,7 +1276,7 @@ function applyFilter() {
     output:         byModel.reduce((s, m) => s + m.output, 0),
     cache_read:     byModel.reduce((s, m) => s + m.cache_read, 0),
     cache_creation: byModel.reduce((s, m) => s + m.cache_creation, 0),
-    cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
+    cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h), 0),
     subagent_tokens: (rawData.subagent_by_type || [])
       .filter(r => selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end))
       .reduce((s, r) => s + r.input + r.output + r.cache_read + r.cache_creation, 0),
@@ -1597,7 +1607,7 @@ function renderTopDispatches(rows) {
   const shown = rows.slice(0, shownCount(dispatchesLimit, rows.length));
   body.innerHTML = shown.map(d => {
     const tokensTotal = d.input + d.output + d.cache_read + d.cache_creation;
-    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation);
+    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation, d.cache_creation_1h);
     const costCell = isBillable(d.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -1668,7 +1678,7 @@ function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatch
 function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
   document.getElementById('sessions-body').innerHTML = shown.map(s => {
-    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation, s.cache_creation_1h);
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -1728,7 +1738,7 @@ function renderModelCostTable(byModel) {
   const sorted = sortModels(byModel);
   const shown = sorted.slice(0, shownCount(modelLimit, sorted.length));
   document.getElementById('model-cost-body').innerHTML = shown.map(m => {
-    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
     const costCell = isBillable(m.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -1871,7 +1881,7 @@ function downloadCSV(reportType, header, rows) {
 function exportModelCSV() {
   const header = ['Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = sortModels(lastByModel).map(m => {
-    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
     return [m.model, m.turns, m.input, m.output, m.cache_read, m.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('cost_by_model', header, rows);
@@ -1880,7 +1890,7 @@ function exportModelCSV() {
 function exportSessionsCSV() {
   const header = ['Session', 'Project', 'Title', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
-    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation, s.cache_creation_1h);
     return [s.session_id, s.project, s.topic, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);
@@ -1906,7 +1916,7 @@ function exportDispatchesCSV() {
   const header = ['Type', 'Agent ID', 'Started', 'Model', 'Turns', 'Tool Uses', 'Duration (ms)', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Total Tokens', 'Est. Cost', 'Status'];
   const rows = lastFilteredDispatches.map(d => {
     const total = d.input + d.output + d.cache_read + d.cache_creation;
-    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation);
+    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation, d.cache_creation_1h);
     return [d.agent_type, d.agent_id, d.start, d.model, d.turns,
             d.tool_uses != null ? d.tool_uses : '', d.duration_ms != null ? d.duration_ms : '',
             d.input, d.output, d.cache_read, d.cache_creation, total, cost.toFixed(4), d.status || ''];

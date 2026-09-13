@@ -459,6 +459,57 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn("api.github.com/repos/phuryn/claude-usage/releases/latest", HTML_TEMPLATE)
 
 
+class TestCacheCreation1hData(unittest.TestCase):
+    """/api/data carries the 1-hour cache-write split so the JS can price it (#162)."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "sess-1h", "project_name": "user/proj",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T10:00:00Z",
+            "git_branch": "main", "model": "claude-opus-4-6",
+            "total_input_tokens": 100, "total_output_tokens": 50,
+            "total_cache_read": 0, "total_cache_creation": 500,
+            "turn_count": 1,
+        }])
+        insert_turns(conn, [{
+            "session_id": "sess-1h", "timestamp": "2026-04-08T09:30:00Z",
+            "model": "claude-opus-4-6", "input_tokens": 100,
+            "output_tokens": 50, "cache_read_tokens": 0,
+            "cache_creation_tokens": 500, "cache_creation_1h_tokens": 400,
+            "tool_name": None, "cwd": "/tmp", "message_id": "msg-1h",
+        }])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_daily_rows_carry_1h(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual(data["daily_by_model"][0]["cache_creation_1h"], 400)
+
+    def test_sessions_carry_1h(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual(data["sessions_all"][0]["cache_creation_1h"], 400)
+
+
+class TestCalcCostCallSites(unittest.TestCase):
+    def test_every_calc_cost_call_passes_1h_portion(self):
+        """A calcCost call that omits the 6th argument silently bills 1-hour
+        cache writes at the 5-minute rate, diverging from the CLI (#162)."""
+        import re
+        calls = re.findall(r"calcCost\(([^()]*)\)", HTML_TEMPLATE)
+        self.assertGreater(len(calls), 10)
+        for args in calls:
+            self.assertEqual(len(args.split(",")), 6, f"calcCost({args})")
+
+
 class TestPricingParity(unittest.TestCase):
     """Verify CLI and dashboard pricing tables stay in sync."""
 

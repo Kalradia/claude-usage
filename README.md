@@ -146,15 +146,17 @@ Costs are calculated using **Anthropic API pricing as of June 2026** ([claude.co
 
 **Only models whose name contains `fable`, `mythos`, `opus`, `sonnet`, or `haiku` are included in cost calculations.** Local models, unknown models, and any other model names are excluded (shown as `n/a`).
 
-| Model | Input | Output | Cache Write | Cache Read |
-|-------|-------|--------|------------|-----------|
-| claude-fable-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $1.00/MTok |
-| claude-mythos-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $1.00/MTok |
-| claude-opus-4-8 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
-| claude-opus-4-7 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
-| claude-opus-4-6 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
-| claude-sonnet-4-6 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
-| claude-haiku-4-5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
+| Model | Input | Output | Cache Write (5m) | Cache Write (1h) | Cache Read |
+|-------|-------|--------|------------|------------|-----------|
+| claude-fable-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $20.00/MTok | $1.00/MTok |
+| claude-mythos-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $20.00/MTok | $1.00/MTok |
+| claude-opus-4-8 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $10.00/MTok | $0.50/MTok |
+| claude-opus-4-7 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $10.00/MTok | $0.50/MTok |
+| claude-opus-4-6 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $10.00/MTok | $0.50/MTok |
+| claude-sonnet-4-6 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $6.00/MTok | $0.30/MTok |
+| claude-haiku-4-5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $2.00/MTok | $0.10/MTok |
+
+Cache writes are priced by TTL: 5-minute writes at 1.25x input and 1-hour writes at 2x input. Claude Code writes most of its prompt cache with the 1-hour TTL; the split comes from each response's `usage.cache_creation` breakdown (older transcripts without it are priced at the 5-minute rate).
 
 > **Note:** These are API prices. If you use Claude Code via a Max or Pro subscription, your actual cost structure is different (subscription-based, not per-token).
 

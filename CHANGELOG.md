@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.6 — TBD
+
+### Scanner / CLI
+
+- Fixed **1-hour-TTL cache writes being priced at the 5-minute rate**. Claude Code writes most of its prompt cache with a 1-hour TTL, which bills at 2x base input rather than 1.25x. The scanner now records the 1-hour portion (`usage.cache_creation.ephemeral_1h_input_tokens`) in a new `turns.cache_creation_1h_tokens` column, and `today` / `week` / `stats` price it at 2x input — on the reporter's corpus this raised reported total cost by ~9.6% (#162, #163, thanks @MildlyMeticulous).
+- Existing databases are **backfilled once on the next scan**: already-processed transcripts are re-read for their TTL breakdown, so historical costs are corrected without a full rescan. Transcripts from before Claude Code recorded the breakdown stay on the 5-minute rate (#162).
+
+### Dashboard
+
+- Every dashboard cost — the Est. Cost stat card and daily cost line, Cost by Model / Project / Project & Branch, Recent Sessions, subagent dispatches, and their CSV exports — now applies the same 1-hour-TTL pricing, so it matches the CLI (#162).
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard

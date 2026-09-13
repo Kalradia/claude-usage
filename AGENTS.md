@@ -76,6 +76,8 @@ Pricing is duplicated in two places that **must stay in sync**:
 - [cli.py](cli.py) `PRICING` dict (Python)
 - [dashboard.py](dashboard.py) `PRICING` const inside `HTML_TEMPLATE` (JavaScript)
 
+**Cache writes are priced by TTL.** `turns.cache_creation_tokens` is the total and `turns.cache_creation_1h_tokens` the 1-hour-TTL portion (from `usage.cache_creation.ephemeral_1h_input_tokens`; 0 for older logs without the breakdown). `calc_cost` / `calcCost` bill the remainder at `cache_write` (the 5-minute rate, 1.25x input) and the 1-hour portion at 2x `input` — derived, so there's no third rate to keep in sync. Every cost call site must pass the 1-hour argument; `TestCalcCostCallSites` fails if a dashboard call omits it. DBs from before the column existed are backfilled once by `_backfill_cache_1h` (gated by the `cache_1h_backfill_done` marker in `schema_meta`).
+
 `get_pricing` / `getPricing` resolve in three tiers: exact match → `startswith` (handles date-suffixed model IDs like `claude-opus-4-7-20260215`) → substring fallback on `opus` / `sonnet` / `haiku`. Models that don't match any tier return `None` and are billed at $0 (shown as `n/a`) — this is intentional so local/3rd-party models (gemma, glm, etc.) aren't charged at Sonnet rates.
 
 ### Dashboard server
