@@ -4,7 +4,7 @@ description: Weekly autonomous triage of claude-usage — merge no-brainers to d
 
 # /triage — weekly claude-usage triage
 
-Designed to be run **headless** via Windows Task Scheduler (`claude -p "/triage"`) once a week. Operates in the local working copy on the `develop` branch only. **Never pushes to `main`.**
+Invoked ad-hoc via `/triage` in Claude Code. Operates in the local working copy on the `develop` branch only. **Never pushes to `main`.**
 
 ## Identity & tone
 
