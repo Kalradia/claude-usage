@@ -96,6 +96,32 @@ class TestSessionAgentBreakdown(unittest.TestCase):
         dispatch = next(r for r in d["top_dispatches"] if r["agent_id"] == "agent-1")
         self.assertEqual(dispatch["parent_session"], "sess-1")
 
+    def test_subagent_count_counts_distinct_agent_ids(self):
+        d = dashboard.get_dashboard_data(self.db_path)
+        sess1 = next(s for s in d["sessions_all"] if s["session_id"] == "sess-1")
+        sess2 = next(s for s in d["sessions_all"] if s["session_id"] == "sess-2")
+        self.assertEqual(sess1["subagent_count"], 1)
+        self.assertEqual(sess2["subagent_count"], 0)
+
+    def test_subagent_count_survives_missing_agents_table_row(self):
+        """Some dispatches have no matching row in `agents` (dispatch
+        metadata wasn't captured), which leaves top_dispatches'
+        parent_session null for them. subagent_count must still count them
+        since it's derived straight from turns, not the agents LEFT JOIN (#N)."""
+        conn = get_db(self.db_path)
+        insert_turns(conn, [
+            _turn("sess-1", "m-sub3", inp=10, out=5, cache_read=20, cache_creation=5,
+                  is_subagent=1, agent_id="agent-orphan"),
+        ])
+        conn.commit()
+        conn.close()
+
+        d = dashboard.get_dashboard_data(self.db_path)
+        sess1 = next(s for s in d["sessions_all"] if s["session_id"] == "sess-1")
+        self.assertEqual(sess1["subagent_count"], 2)
+        orphan_dispatch = next(r for r in d["top_dispatches"] if r["agent_id"] == "agent-orphan")
+        self.assertIsNone(orphan_dispatch["parent_session"])
+
 
 class TestCacheHitRateUI(unittest.TestCase):
     """Structural checks on the embedded JS/HTML (same convention as
@@ -115,9 +141,21 @@ class TestCacheHitRateUI(unittest.TestCase):
         self.assertIn("function renderCacheChart(", HTML_TEMPLATE)
         self.assertIn("renderCacheChart(daily)", HTML_TEMPLATE)
 
-    def test_sessions_table_has_sortable_hit_rate_column(self):
-        self.assertIn("setSessionSort('hit_rate')", HTML_TEMPLATE)
-        self.assertIn("'hit_rate'", HTML_TEMPLATE)
+    def test_sessions_table_has_sortable_hit_rate_columns(self):
+        # Main-agent and subagent cache hit rate are separate sortable
+        # columns, not one combined column (#N).
+        self.assertIn("setSessionSort('hit_rate_main')", HTML_TEMPLATE)
+        self.assertIn("setSessionSort('hit_rate_sub')", HTML_TEMPLATE)
+        self.assertIn("'hit_rate_main'", HTML_TEMPLATE)
+        self.assertIn("'hit_rate_sub'", HTML_TEMPLATE)
+
+    def test_sessions_table_has_sortable_subagent_count_column(self):
+        self.assertIn("setSessionSort('subagents')", HTML_TEMPLATE)
+        self.assertIn("'subagents'", HTML_TEMPLATE)
+        # Must come from the server-computed subagent_count, not a count of
+        # top_dispatches rows — those are only linked back to a session when
+        # the agents table has a matching row, which isn't always true (#N).
+        self.assertIn("s.subagent_count", HTML_TEMPLATE)
 
     def test_sessions_rows_are_clickable_for_detail_expand(self):
         self.assertIn("data-session-id", HTML_TEMPLATE)
@@ -130,6 +168,22 @@ class TestCacheHitRateUI(unittest.TestCase):
 
     def test_dispatches_table_has_hit_rate_column(self):
         self.assertIn('<th>Cache Hit %</th>', HTML_TEMPLATE)
+
+    def test_session_detail_does_not_combine_subagent_rows(self):
+        # The expanded row lists each dispatch's own cache hit rate instead
+        # of one aggregated "Subagents (combined)" line, which washed out
+        # per-dispatch differences (#N).
+        self.assertNotIn("Subagents (combined)", HTML_TEMPLATE)
+
+    def test_session_detail_rows_use_fixed_width_columns_for_alignment(self):
+        # A plain flex space-between row misaligns the cache-hit column once
+        # labels vary in length ("Main agent" vs "↳ general-purpose"); a
+        # fixed flex-basis on the label/hit columns keeps them lined up (#N).
+        self.assertIn("agent-split-label", HTML_TEMPLATE)
+        self.assertIn("agent-split-hit", HTML_TEMPLATE)
+        agent_split_rule = re.search(r"\.agent-split-row \{[^}]*\}", HTML_TEMPLATE)
+        self.assertIsNotNone(agent_split_rule)
+        self.assertNotIn("justify-content", agent_split_rule.group(0))
 
     def test_subagent_chart_tooltip_reports_hit_rate(self):
         # renderSubagentChart's tooltip footer callback

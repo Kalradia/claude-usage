@@ -185,6 +185,19 @@ def get_dashboard_data(db_path=DB_PATH):
             "cache_creation_1h": r["cache_creation_1h"] or 0,
         })
 
+    # Number of distinct subagents dispatched per session. Counted directly
+    # from turns (not top_dispatches) because top_dispatches only links a
+    # dispatch back to its session via a LEFT JOIN on the agents table, which
+    # is missing for some dispatches (agent metadata wasn't captured) — that
+    # would silently undercount here even though the tokens above are real.
+    subagent_count_rows = conn.execute("""
+        SELECT session_id, COUNT(DISTINCT agent_id) as cnt
+        FROM turns
+        WHERE is_subagent = 1 AND agent_id IS NOT NULL
+        GROUP BY session_id
+    """).fetchall()
+    session_subagent_count = {r["session_id"]: r["cnt"] for r in subagent_count_rows}
+
     sessions_all = []
     for r in session_rows:
         try:
@@ -212,6 +225,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "cache_creation_1h": r["total_cache_creation_1h"] or 0,
             "by_model":      session_breakdown.get(r["session_id"], []),
             "by_agent":      session_agent_split.get(r["session_id"], []),
+            "subagent_count": session_subagent_count.get(r["session_id"], 0),
         })
 
     # ── Subagent breakdown by type, by day & model ────────────────────────────
@@ -446,7 +460,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #sessions-body tr.clickable-row { cursor: pointer; }
   #sessions-body tr.clickable-row.expanded td { border-bottom-color: transparent; }
   .session-detail-row td { background: var(--raised); padding: 10px 16px; }
-  .agent-split-row { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; font-size: 12px; }
+  .agent-split-row { display: flex; gap: 16px; padding: 4px 0; font-size: 12px; }
+  .agent-split-row .agent-split-label { flex: 0 0 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-split-row .agent-split-hit { flex: 0 0 110px; }
   .agent-split-row .muted { white-space: nowrap; }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
   .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
@@ -670,7 +686,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
         <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
         <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
-        <th class="sortable" onclick="setSessionSort('hit_rate')">Cache Hit % <span class="sort-icon" id="sort-icon-hit_rate"></span></th>
+        <th class="sortable" onclick="setSessionSort('subagents')">Subagents <span class="sort-icon" id="sort-icon-subagents"></span></th>
+        <th class="sortable" onclick="setSessionSort('hit_rate_main')">Main Cache Hit % <span class="sort-icon" id="sort-icon-hit_rate_main"></span></th>
+        <th class="sortable" onclick="setSessionSort('hit_rate_sub')">Subagent Cache Hit % <span class="sort-icon" id="sort-icon-hit_rate_sub"></span></th>
         <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
@@ -922,6 +940,13 @@ function hitRate(inp, cacheRead, cacheCreation) {
   return total > 0 ? cacheRead / total : null;
 }
 function fmtPct(x) { return (x === null || x === undefined) ? 'n/a' : (x * 100).toFixed(1) + '%'; }
+
+// s.by_agent has at most 2 rows (is_subagent 0/1); these pull out the one
+// side or the other for the recent-sessions table and its expanded detail.
+function sessionMainAgent(s) { return (s.by_agent || []).find(r => r.is_subagent === 0); }
+function sessionSubAgent(s)  { return (s.by_agent || []).find(r => r.is_subagent === 1); }
+// Individual subagent runs dispatched within a session, one row per agent_id.
+function sessionDispatches(s) { return (rawData.top_dispatches || []).filter(d => d.parent_session === s.session_id); }
 
 // ── Chart colors ───────────────────────────────────────────────────────────
 // Warm/neutral palette kept in sync with the CSS :root variables so charts match
@@ -1282,9 +1307,17 @@ function sortSessions(sessions) {
     if (sessionSortCol === 'cost') {
       av = sessionCost(a);
       bv = sessionCost(b);
-    } else if (sessionSortCol === 'hit_rate') {
-      av = hitRate(a.input, a.cache_read, a.cache_creation) ?? -1;
-      bv = hitRate(b.input, b.cache_read, b.cache_creation) ?? -1;
+    } else if (sessionSortCol === 'hit_rate_main') {
+      const am = sessionMainAgent(a), bm = sessionMainAgent(b);
+      av = (am ? hitRate(am.input, am.cache_read, am.cache_creation) : null) ?? -1;
+      bv = (bm ? hitRate(bm.input, bm.cache_read, bm.cache_creation) : null) ?? -1;
+    } else if (sessionSortCol === 'hit_rate_sub') {
+      const as_ = sessionSubAgent(a), bs = sessionSubAgent(b);
+      av = (as_ ? hitRate(as_.input, as_.cache_read, as_.cache_creation) : null) ?? -1;
+      bv = (bs ? hitRate(bs.input, bs.cache_read, bs.cache_creation) : null) ?? -1;
+    } else if (sessionSortCol === 'subagents') {
+      av = a.subagent_count || 0;
+      bv = b.subagent_count || 0;
     } else if (sessionSortCol === 'duration_min') {
       av = parseFloat(a.duration_min) || 0;
       bv = parseFloat(b.duration_min) || 0;
@@ -1827,8 +1860,9 @@ function moreDispatchRows(){ dispatchesLimit = nextTableLimit(dispatchesLimit, l
 function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatches(lastFilteredDispatches);            scrollTableToTop('dispatches-body'); }
 
 // Sessions table columns: Session, Project, Title, Last Active, Duration,
-// Model, Turns, Input, Output, Cache Hit %, Est. Cost.
-const SESSIONS_TABLE_COLS = 11;
+// Model, Turns, Input, Output, Subagents, Main Cache Hit %, Subagent Cache
+// Hit %, Est. Cost.
+const SESSIONS_TABLE_COLS = 13;
 
 function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
@@ -1840,7 +1874,11 @@ function renderSessionsTable(sessions) {
     const titleCell = s.topic
       ? `<td class="topic-cell" title="${esc(s.topic)}">${esc(s.topic)}</td>`
       : `<td class="topic-cell"><span class="untitled">Untitled</span></td>`;
-    const hitPct = fmtPct(hitRate(s.input, s.cache_read, s.cache_creation));
+    const main = sessionMainAgent(s);
+    const sub = sessionSubAgent(s);
+    const mainHitPct = fmtPct(main ? hitRate(main.input, main.cache_read, main.cache_creation) : null);
+    const subHitPct = fmtPct(sub ? hitRate(sub.input, sub.cache_read, sub.cache_creation) : null);
+    const subagentCount = s.subagent_count || 0;
     return `<tr class="clickable-row" data-session-id="${esc(s.session_id)}">
       <td class="muted" style="font-family:monospace">${esc(s.session_id.slice(0, 8))}&hellip;</td>
       <td>${esc(s.project)}</td>
@@ -1851,7 +1889,9 @@ function renderSessionsTable(sessions) {
       <td class="num">${s.turns}</td>
       <td class="num">${fmt(s.input)}</td>
       <td class="num">${fmt(s.output)}</td>
-      <td class="num">${hitPct}</td>
+      <td class="num">${subagentCount}</td>
+      <td class="num">${mainHitPct}</td>
+      <td class="num">${subHitPct}</td>
       ${costCell}
     </tr>`;
   }).join('');
@@ -1859,26 +1899,22 @@ function renderSessionsTable(sessions) {
 }
 
 // Renders the main-agent-vs-subagent cache/token split for one session, shown
-// in the row inserted by toggleSessionDetail. by_agent has at most 2 rows
-// (is_subagent 0/1); individual dispatches come from top_dispatches, which
-// carries each subagent run's parent_session.
+// in the row inserted by toggleSessionDetail. Subagents are shown per
+// dispatch rather than combined into one aggregate line, since combining
+// them washes out per-agent-type cache hit differences.
 function renderSessionAgentDetail(s) {
-  const byAgent = s.by_agent || [];
-  const main = byAgent.find(r => r.is_subagent === 0);
-  const sub = byAgent.find(r => r.is_subagent === 1);
+  const main = sessionMainAgent(s);
   const line = (label, r) => {
     if (!r) return '';
     const hr = fmtPct(hitRate(r.input, r.cache_read, r.cache_creation));
-    return `<div class="agent-split-row"><span>${esc(label)}</span><span>${hr} cache hit</span><span class="muted">${fmt(r.input)} in &middot; ${fmt(r.cache_read)} read &middot; ${fmt(r.cache_creation)} write</span></div>`;
+    return `<div class="agent-split-row"><span class="agent-split-label">${esc(label)}</span><span class="agent-split-hit">${hr} cache hit</span><span class="muted">${fmt(r.input)} in &middot; ${fmt(r.cache_read)} read &middot; ${fmt(r.cache_creation)} write</span></div>`;
   };
-  const dispatches = (rawData.top_dispatches || []).filter(d => d.parent_session === s.session_id);
-  const dispatchLines = dispatches.map(d => {
+  const dispatchLines = sessionDispatches(s).map(d => {
     const hr = fmtPct(hitRate(d.input, d.cache_read, d.cache_creation));
-    return `<div class="agent-split-row"><span>&#8627; ${esc(d.agent_type)}</span><span>${hr} cache hit</span><span class="muted">${fmt(d.input)} in &middot; ${fmt(d.cache_read)} read &middot; ${fmt(d.cache_creation)} write</span></div>`;
+    return `<div class="agent-split-row"><span class="agent-split-label">&#8627; ${esc(d.agent_type)}</span><span class="agent-split-hit">${hr} cache hit</span><span class="muted">${fmt(d.input)} in &middot; ${fmt(d.cache_read)} read &middot; ${fmt(d.cache_creation)} write</span></div>`;
   }).join('');
   return `<div class="session-detail">
     ${line('Main agent', main)}
-    ${sub ? line('Subagents (combined)', sub) : ''}
     ${dispatchLines}
   </div>`;
 }
