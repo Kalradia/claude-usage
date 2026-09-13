@@ -387,8 +387,8 @@ class TestDashboardHTTP(unittest.TestCase):
 
     def test_index_injects_app_config(self):
         # do_GET must substitute the __APP_CONFIG_JSON__ placeholder with a real
-        # JSON object (version + surface). The raw placeholder must never reach
-        # the browser, or window.APP_CONFIG would be a syntax error.
+        # JSON object (version). The raw placeholder must never reach the
+        # browser, or window.APP_CONFIG would be a syntax error.
         from scanner import VERSION
         url = f"http://127.0.0.1:{self.port}/"
         with urllib.request.urlopen(url) as resp:
@@ -396,8 +396,6 @@ class TestDashboardHTTP(unittest.TestCase):
         self.assertNotIn("__APP_CONFIG_JSON__", body)
         self.assertIn("window.APP_CONFIG =", body)
         self.assertIn(VERSION, body)
-        # The HTTP test server keeps the default surface ("web").
-        self.assertIn('"surface": "web"', body)
 
 
 class TestHTMLTemplate(unittest.TestCase):
@@ -450,11 +448,6 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn('id="footer-meta"', HTML_TEMPLATE)
         self.assertIn("function initFooterMeta(", HTML_TEMPLATE)
         self.assertIn("function checkForUpdate(", HTML_TEMPLATE)
-
-    def test_update_check_is_surface_gated(self):
-        """The GitHub update check and the extension promo are web-only: both
-        guard on surface !== 'vscode' so the embedded panel stays quiet."""
-        self.assertIn("APP_CONFIG.surface !== 'vscode'", HTML_TEMPLATE)
         # The update check hits GitHub's public releases API, not any usage data.
         self.assertIn("api.github.com/repos/phuryn/claude-usage/releases/latest", HTML_TEMPLATE)
 

@@ -416,7 +416,7 @@ def cmd_stats():
     conn.close()
 
 
-def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, surface=None):
+def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False):
     import threading
     import time
 
@@ -426,11 +426,10 @@ def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, sur
     port = int(port or os.environ.get("PORT", "8080"))
 
     # Bind and serve the port *first*, then scan in the background. A cold scan
-    # over a large ~/.claude/projects backlog can take well over a minute, and
-    # the VS Code extension kills the process if it doesn't answer /api/data
-    # within ~10s (see vscode-extension/src/server-manager.ts). Serving up front
-    # means the port is live immediately; the dashboard shows whatever's already
-    # in the DB and auto-refreshes as the background scan commits new data.
+    # over a large ~/.claude/projects backlog can take well over a minute; serving
+    # up front means the port is live immediately, and the dashboard shows
+    # whatever's already in the DB and auto-refreshes as the background scan
+    # commits new data.
     #
     # Capture cmd_scan into a local so the background thread closes over the
     # current binding — keeps the test suite's mock.patch(cli.cmd_scan) effective
@@ -444,8 +443,8 @@ def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, sur
 
     threading.Thread(target=background_scan, daemon=True).start()
 
-    # Open a browser for users running this as a script (see README). The VS Code
-    # extension passes --no-browser since it embeds the dashboard in a webview.
+    # Open a browser for users running this as a script (see README). --no-browser
+    # skips this for headless/server deployments.
     if not no_browser:
         import webbrowser
 
@@ -455,7 +454,7 @@ def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, sur
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-    serve(host=host, port=port, surface=surface)
+    serve(host=host, port=port)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -468,7 +467,7 @@ Usage:
   python cli.py today                        Show today's usage summary
   python cli.py week                         Show last 7 days (per-day + by-model)
   python cli.py stats                        Show all-time statistics
-  python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT] [--no-browser] [--surface SURFACE]
+  python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT] [--no-browser]
                                                  Scan + start dashboard (opens a browser unless --no-browser)
   python cli.py --version                    Print the version and exit
 """
@@ -508,7 +507,6 @@ def main():
             host=parse_named_arg(rest, "--host"),
             port=parse_named_arg(rest, "--port"),
             no_browser="--no-browser" in rest,
-            surface=parse_named_arg(rest, "--surface"),
         )
     elif command == "scan" and projects_dir:
         cmd_scan(projects_dir=projects_dir)

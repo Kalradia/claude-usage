@@ -2,6 +2,10 @@
 
 ## v1.5.6 — TBD
 
+### VS Code extension
+
+- **Removed the VS Code extension.** It's no longer maintained; the dashboard is still fully usable as a standalone web app (`python cli.py dashboard`). Removed the `vscode-extension/` directory, its CI workflow, the release workflow's `.vsix` build/publish step, and the `--surface` dashboard flag used only to render the embedded webview differently.
+
 ### Scanner / CLI
 
 - Fixed **`claude-sonnet-5` usage being priced at the stale Sonnet 4.x rate** ($3/$15 per MTok input/output) instead of its actual, permanent rate ($2/$10 input/output, $0.20 cache read, $2.50 5-min cache write). `claude-sonnet-5` had no explicit `PRICING` entry, so it fell through the substring fallback to `claude-sonnet-4-6` — overstating Sonnet 5 costs by ~50% in `today` / `week` / `stats` and every dashboard cost view. The generic "sonnet" substring fallback (for unrecognized future variants) now also defaults to the current-generation rate rather than a fixed prior-generation one (#175).

@@ -4,8 +4,8 @@
 # is unaffected.
 #
 # The version is read dynamically from scanner.VERSION so it stays a single
-# source of truth (kept in lockstep with the CHANGELOG heading and the VS Code
-# extension's package.json by tests/test_version.py) — do NOT hardcode it here.
+# source of truth (kept in lockstep with the CHANGELOG heading by
+# tests/test_version.py) — do NOT hardcode it here.
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"

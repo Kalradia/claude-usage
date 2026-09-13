@@ -1,12 +1,10 @@
 """Tests for the single source-of-truth version (scanner.VERSION).
 
-The runtime version lives in scanner.py because the canonical CHANGELOG.md is
-NOT bundled into the .vsix — only the three Python files are. These tests keep
-the three places a version is written from drifting: scanner.VERSION, the top
-CHANGELOG heading, and vscode-extension/package.json. If you bump one, bump all.
+The runtime version lives in scanner.py as a constant. These tests keep the two
+places a version is written from drifting: scanner.VERSION and the top
+CHANGELOG heading. If you bump one, bump the other.
 """
 
-import json
 import re
 import subprocess
 import sys
@@ -28,13 +26,6 @@ def _changelog_top_version():
     return None
 
 
-def _package_json_version():
-    pkg = json.loads(
-        (REPO_ROOT / "vscode-extension" / "package.json").read_text(encoding="utf-8")
-    )
-    return pkg["version"]
-
-
 class TestVersion(unittest.TestCase):
     def test_version_is_strict_semver(self):
         self.assertRegex(VERSION, r"^\d+\.\d+\.\d+$")
@@ -50,15 +41,6 @@ class TestVersion(unittest.TestCase):
             top, VERSION,
             f"scanner.VERSION ({VERSION}) != top CHANGELOG heading ({top}). "
             "Bump both in lockstep.",
-        )
-
-    def test_matches_package_json(self):
-        pkg = _package_json_version()
-        self.assertEqual(
-            pkg, VERSION,
-            f"scanner.VERSION ({VERSION}) != vscode-extension/package.json "
-            f"version ({pkg}). The .vsix asset filename embeds the package "
-            "version, so they must match.",
         )
 
     def test_cli_version_flag(self):

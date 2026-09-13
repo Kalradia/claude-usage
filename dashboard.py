@@ -14,15 +14,6 @@ from scanner import VERSION, init_db
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
-# Which surface is rendering the dashboard: "web" (standalone `cli.py dashboard`)
-# or "vscode" (embedded in the extension's sidebar webview). serve() sets this
-# from the --surface flag the extension passes. The footer reads it to decide
-# what to show — the web build promotes the VS Code extension and offers a
-# "check GitHub for a newer release" update link; the embedded build shows just
-# the version (VS Code updates the extension itself, and a GitHub-release check
-# would misfire there because the Marketplace publish lags the GitHub release).
-SURFACE = "web"
-
 # Client-side auto-refresh (see scheduleAutoRefresh in the served JS) polls
 # every 30s while the selected date range includes today. Some deployments'
 # data can't change between polls -- e.g. a scan that only ever runs once at
@@ -359,10 +350,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
-  /* VS Code-style scrollbars. The dashboard renders inside a webview iframe,
-     which doesn't inherit VS Code's --vscode-* theme variables, so we set the
-     scrollbar here: no arrows, grey thumb (#28292B, #8B8B8D on hover) over a
-     #121314 track, in a 21px gutter. Also fits the dark UI standalone. */
+  /* Custom scrollbars matching the dark UI: no arrows, grey thumb (#28292B,
+     #8B8B8D on hover) over a #121314 track, in a 21px gutter. */
   * { scrollbar-width: auto; scrollbar-color: #28292B #121314; }
   ::-webkit-scrollbar { width: 21px; height: 21px; }
   ::-webkit-scrollbar-track { background: #121314; }
@@ -412,8 +401,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .filter-btn { padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
   .filter-btn:hover { border-color: var(--accent); color: var(--text); }
   /* Date range — a compact dropdown. The old segmented button row (8 buttons)
-     wrapped badly in the narrow VS Code panel; a single select stays put. Styled
-     to match the model trigger. */
+     wrapped badly at narrow widths; a single select stays put. Styled to match
+     the model trigger. */
   .range-select { position: relative; flex-shrink: 0; }
   .range-select select { appearance: none; -webkit-appearance: none; min-width: 150px; padding: 5px 30px 5px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; cursor: pointer; transition: border-color 0.15s; }
   .range-select select:hover, .range-select select:focus { border-color: var(--accent); outline: none; }
@@ -499,7 +488,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
      overlays it. */
   /* Sticky table-of-contents for the long report: three compact entries —
      Overview, plus Graphs and Tables menus that reveal their sections on hover
-     (or keyboard focus). Stays small so it never crowds the narrow VS Code panel. */
+     (or keyboard focus). Stays small so it never crowds the layout. */
   #jump-bar { position: sticky; top: 0; z-index: 20; background: var(--card); border-bottom: 1px solid var(--border); padding: 7px 24px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
   .jump-menu { position: relative; }
   .jump-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
@@ -2251,11 +2240,10 @@ function scheduleAutoRefresh() {
   }
 }
 
-// ── Footer meta: version, extension promo, update check ──────────────────────
-// APP_CONFIG is injected server-side (see do_GET). { version, surface, autoRefresh }.
-const APP_CONFIG = window.APP_CONFIG || { version: '', surface: 'web', autoRefresh: true };
+// ── Footer meta: version, update check ────────────────────────────────────────
+// APP_CONFIG is injected server-side (see do_GET). { version, autoRefresh }.
+const APP_CONFIG = window.APP_CONFIG || { version: '', autoRefresh: true };
 const REPO_URL = 'https://github.com/phuryn/claude-usage';
-const MARKETPLACE_URL = 'https://marketplace.visualstudio.com/items?itemName=PawelHuryn.claude-usage-phuryn';
 const UPDATE_CACHE_KEY = 'cu_update_check';
 const UPDATE_CACHE_TTL = 24 * 60 * 60 * 1000;  // re-check GitHub at most once a day
 
@@ -2285,10 +2273,10 @@ function appendUpdateLink(latest) {
   el.appendChild(a);
 }
 
-// Web only. Asks GitHub's public releases API whether a newer release exists and,
-// if so, appends an "Update to vX.Y.Z" link. Cached in localStorage for 24h and
-// fully fail-silent (offline / rate-limited / blocked -> no link, no error). No
-// usage data is sent; this is a plain unauthenticated GET of release metadata.
+// Asks GitHub's public releases API whether a newer release exists and, if so,
+// appends an "Update to vX.Y.Z" link. Cached in localStorage for 24h and fully
+// fail-silent (offline / rate-limited / blocked -> no link, no error). No usage
+// data is sent; this is a plain unauthenticated GET of release metadata.
 function checkForUpdate(current) {
   let cached = null;
   try { cached = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || 'null'); } catch (e) {}
@@ -2317,13 +2305,8 @@ function initFooterMeta() {
   if (v) {
     parts.push('Version <a href="' + REPO_URL + '/releases/tag/v' + esc(v) + '" target="_blank" rel="noopener">v' + esc(v) + '</a>');
   }
-  // The web build promotes the extension; the embedded build is already in it.
-  if (APP_CONFIG.surface !== 'vscode') {
-    parts.push('<a href="' + MARKETPLACE_URL + '" target="_blank" rel="noopener">Get the VS Code extension</a>');
-  }
   el.innerHTML = parts.join('&nbsp;&middot;&nbsp;');
-  // VS Code auto-updates the extension, so only the web build checks for updates.
-  if (v && APP_CONFIG.surface !== 'vscode') checkForUpdate(v);
+  if (v) checkForUpdate(v);
 }
 
 // ── Section nav + collapsible cards ─────────────────────────────────────────
@@ -2474,24 +2457,13 @@ scheduleAutoRefresh();
 
 
 def find_icon_file():
-    """Locate the extension's icon.svg across both run contexts.
+    """Locate ``resources/icon.svg`` next to this file.
 
-    - Bundled in the .vsix: this file lives at ``python/dashboard.py`` and the
-      icon is a sibling-of-parent at ``../resources/icon.svg``.
-    - Standalone repo (``python cli.py dashboard``): this file is the repo-root
-      ``dashboard.py`` and the icon is at ``vscode-extension/resources/icon.svg``.
-
-    Returns the first existing path, or ``None`` so the /icon.svg route can 404
+    Returns ``None`` (rather than raising) so the /icon.svg route can 404
     gracefully (the header ``<img>`` then just renders empty alt text).
     """
-    here = Path(__file__).resolve().parent
-    for candidate in (
-        here.parent / "resources" / "icon.svg",
-        here / "vscode-extension" / "resources" / "icon.svg",
-    ):
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = Path(__file__).resolve().parent / "resources" / "icon.svg"
+    return candidate if candidate.is_file() else None
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -2504,11 +2476,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # URLs don't fall through to 404.
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
-            # Inject runtime config (version + surface + auto-refresh) the page
-            # can't know at author time. json.dumps produces a valid JS object
-            # literal for the `window.APP_CONFIG = __APP_CONFIG_JSON__;`
-            # placeholder in the head.
-            config = json.dumps({"version": VERSION, "surface": SURFACE, "autoRefresh": AUTO_REFRESH})
+            # Inject runtime config (version + auto-refresh) the page can't know
+            # at author time. json.dumps produces a valid JS object literal for
+            # the `window.APP_CONFIG = __APP_CONFIG_JSON__;` placeholder in the
+            # head.
+            config = json.dumps({"version": VERSION, "autoRefresh": AUTO_REFRESH})
             html = HTML_TEMPLATE.replace("__APP_CONFIG_JSON__", config)
             body = html.encode("utf-8")
             self.send_response(200)
@@ -2578,10 +2550,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-def serve(host=None, port=None, surface=None):
-    global SURFACE
-    if surface:
-        SURFACE = surface
+def serve(host=None, port=None):
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
     server = ThreadingHTTPServer((host, port), DashboardHandler)

@@ -255,7 +255,7 @@ class TestPricingConsistency(unittest.TestCase):
 
 
 class TestDashboardNoBrowser(unittest.TestCase):
-    """The VS Code extension passes --no-browser; CLI users get a browser."""
+    """--no-browser skips opening a browser, for headless/server deployments."""
 
     def test_no_browser_suppresses_webbrowser(self):
         with mock.patch.object(cli, "cmd_scan"), \

@@ -11,10 +11,8 @@ from datetime import datetime, timezone
 
 # Single source of truth for the app version reported by the CLI (`--version`)
 # and the dashboard footer. CHANGELOG.md is the canonical version reference, but
-# it isn't bundled into the .vsix — only the three Python files are — so the
-# runtime version has to live here as a constant. Keep this in lockstep with the
-# top CHANGELOG heading and vscode-extension/package.json (a parity test guards
-# all three; see tests/test_version.py).
+# the runtime needs it as a constant too. Keep this in lockstep with the top
+# CHANGELOG heading (a parity test guards both; see tests/test_version.py).
 VERSION = "1.5.6"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"

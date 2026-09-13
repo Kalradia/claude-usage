@@ -3,13 +3,11 @@ name: Tag and release from CHANGELOG
 # Runs after each push to main. If CHANGELOG.md gained a new ## vX.Y.Z heading
 # anywhere in this push's commit range (compared to the push's `before` SHA):
 #   1. create a lightweight tag with that version name at the pushed commit, and
-#   2. build the VS Code extension .vsix and publish a GitHub Release for that
-#      tag — the matching CHANGELOG section as the notes, the .vsix attached.
+#   2. publish a GitHub Release for that tag, using the matching CHANGELOG
+#      section as the notes.
 #
 # CHANGELOG is the source of truth; the tag and the Release are deterministic
-# projections of it. This is the automated twin of the manual procedure in
-# c:\GitHub\grok-build-vscode (scripts/release.*): tag + `gh release create`
-# with the built .vsix as a release asset.
+# projections of it.
 #
 # No action when CHANGELOG wasn't touched, when an existing version heading was
 # edited (not added), or when the tag/release already exists. Safe to re-run on
@@ -97,50 +95,11 @@ jobs:
           git push origin "$VERSION"
           echo "Tagged $VERSION at $(git rev-parse HEAD)."
 
-      # ── Release: build the .vsix and publish a GitHub Release ───────────────
-      # Everything below is gated on a new version being detected, so ordinary
-      # pushes to main (docs, typo fixes) incur no Node setup or build cost.
+      # ── Release: publish a GitHub Release ────────────────────────────────────
+      # Gated on a new version being detected, so ordinary pushes to main (docs,
+      # typo fixes) incur no extra cost.
 
-      - name: Set up Node (to build the .vsix)
-        if: steps.detect.outputs.version != ''
-        uses: actions/setup-node@v5
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: vscode-extension/package-lock.json
-
-      - name: Build the .vsix
-        if: steps.detect.outputs.version != ''
-        working-directory: vscode-extension
-        env:
-          VERSION: ${{ steps.detect.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          # The .vsix filename embeds vscode-extension/package.json's version, so
-          # it must match the CHANGELOG heading or the asset name won't match the
-          # tag. Bumping package.json is a release-time step (see RELEASING.md); fail
-          # loudly if it was forgotten rather than ship a mislabelled asset.
-          want="${VERSION#v}"
-          pkg_version=$(node -p "require('./package.json').version")
-          if [ "$pkg_version" != "$want" ]; then
-            echo "::error::vscode-extension/package.json is $pkg_version but CHANGELOG released $VERSION. Bump package.json to $want before the release merge."
-            exit 1
-          fi
-
-          npm ci
-          npm run package
-
-          name=$(node -p "require('./package.json').name")
-          vsix="${name}-${want}.vsix"
-          if [ ! -f "$vsix" ]; then
-            echo "::error::Expected $vsix but it wasn't produced."
-            exit 1
-          fi
-          echo "VSIX=vscode-extension/$vsix" >> "$GITHUB_ENV"
-          echo "Built $vsix."
-
-      - name: Create GitHub Release with the .vsix attached
+      - name: Create GitHub Release
         if: steps.detect.outputs.version != ''
         env:
           VERSION: ${{ steps.detect.outputs.version }}
@@ -169,6 +128,5 @@ jobs:
 
           gh release create "$VERSION" \
             --title "$VERSION" \
-            --notes-file "$notes" \
-            "$VSIX"
-          echo "Released $VERSION with $VSIX attached."
+            --notes-file "$notes"
+          echo "Released $VERSION."
